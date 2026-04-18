@@ -1,0 +1,16 @@
+{
+  "name": "quantx-monitoring",
+  "type": "module",
+  "scripts": {
+    "start": "pm2 start src/server.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/websocket": "^11.2.0",
+    "axios": "^1.6.0",
+    "dotenv": "^16.4.0",
+    "ethers": "^6.10.0",
+    "fastify": "^5.7.4",
+    "pg": "^8.11.3"
+  }
+}
