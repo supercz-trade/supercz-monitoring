@@ -179,6 +179,18 @@ pushAggLog({
   // ── Publish WS ─────────────────────────────────────────────
 const liquidityState = getLiquidityStateCache(data.tokenAddress);
 
+ let ts;
+
+if (data.time instanceof Date) {
+  ts = Math.floor(data.time.getTime() / 1000);
+} else if (typeof data.time === "string") {
+  ts = Math.floor(new Date(data.time).getTime() / 1000);
+} else if (typeof data.time === "number") {
+  ts = data.time > 1e12 ? Math.floor(data.time / 1000) : data.time;
+} else {
+  ts = Math.floor(Date.now() / 1000);
+}
+
 publish("token_update", {
   tokenAddress: data.tokenAddress,
 
@@ -225,13 +237,13 @@ publish("token_update", {
     }
   }),
 
-  timestamp: Date.now(),
+  timestamp: ts,
 });
 
   if (data.position === "BUY" || data.position === "SELL") {
     const txPayload = {
       txHash: data.txHash,
-      time: data.time,
+      time: ts,
       position: data.position,
       tokenAmount: data.amountReceive,
       basePair: data.basePayable,
@@ -242,10 +254,11 @@ publish("token_update", {
       wallet,
       tag: data.tagAddress || null,
       isDev: data.isDev || false,
-      timestamp: Date.now(),
+      timestamp: ts,
     };
     publish("transaction:all", txPayload);
-    publish(`transactions:${data.tokenAddress}`, txPayload);
+    // [MODIFIED]
+    publish(`transaction:${data.tokenAddress}`, txPayload);
   }
 
 }
