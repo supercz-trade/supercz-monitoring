@@ -15,6 +15,8 @@ const PAIR_MAP = {
   BNB:  "0x16b9a82891338f9bA80E2D6970FddA79D1eb0daE", // WBNB/USDT PancakeSwap v2
   CAKE: "0x0eD7e52944161450477ee417DE9Cd3a859b14fD0", // CAKE/WBNB PancakeSwap v2
   ASTER:"0x7E58f160B5B77b8B24Cd9900C09A3E730215aC47", // ASTER/USDT PancakeSwap v3
+  币安人生: "0x66f289De31EEF70d52186729d2637Ac978CFC56B",
+     FORM: "0x7Cb113B487e025b3a69537fcA579559433240cb5",
 };
 
 // ── Stablecoins selalu 1 ───────────────────────────────────────
