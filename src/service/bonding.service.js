@@ -78,7 +78,16 @@ export async function updateBondingProgress({
   `, [tokenAddress]);
 
   const prev = rows[0] || {};
-  const prevBonding = Number(prev.bonding_base || 0);
+  // [MODIFIED] FIX BASE vs USD
+const prevBondingBase = Number(prev.bonding_base || 0);
+
+// convert USD → BASE
+const deltaBase = basePrice > 0 ? delta / basePrice : 0;
+
+const bondingBase = Math.max(prevBondingBase + deltaBase, 0);
+
+// baru hitung USD
+const bondingUSD = bondingBase * basePrice;
 
   // =========================
   // DEBUG BEFORE
@@ -96,7 +105,7 @@ export async function updateBondingProgress({
   // =========================
   // BONDING IN USD
   // =========================
-  const bondingUSD = Math.max(prevBonding + delta, 0);
+  
 
   // =========================
   // TARGET FIX (IMPORTANT 🔥)
@@ -164,7 +173,8 @@ export async function updateBondingProgress({
       updated_at = NOW()
   `, [
     tokenAddress,
-    bondingUSD,
+    bondingBase,  // ✅ BASE
+    bondingUSD,   // ✅ USD
     target,
     progress,
     "bonding", // platform
