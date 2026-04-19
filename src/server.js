@@ -17,7 +17,7 @@ import { warmupLiquidityCache } from "./cache/liquidity.cache.js";
 import { startCandleFlush, warmupLastClose }     from "./repository/candleBuilder.js";
 import { startCandleRepair }                     from "./repository/candleRepair.js";
 
-import { getCandles, getEvents, getEventsByAddress }  from "./api/candles.route.js"; // [MODIFIED] add new handler
+import { getCandles, getEvents, getEventsByAddress }  from "./api/candles.route.js";
 import { getHolders }             from "./api/holders.route.js";
 import {
   getNewTokens,
@@ -31,6 +31,7 @@ import {
 } from "./api/transactions.route.js";
 
 import { getPlatformStats, getPlatformVolumeChart } from "./api/platform.route.js";
+import { getGasPrice } from "./api/utils_route.js"; // [ADDED]
 import debugRoutes from "./api/debug.routes.js";
 
 import fs   from "fs";
@@ -96,15 +97,11 @@ async function main() {
   // ============================================================
 
   console.log("[CACHE] Warming up stats cache from DB...");
-
-  // [ADDED] blocking warmup (NO setTimeout)
   await warmupStatsCache();
-
   console.log("[CACHE] Stats cache ready");
 
-  await warmupLiquidityCache(); // 🔥 WAJIB
-
-console.log("[CACHE] Liquidity cache ready");
+  await warmupLiquidityCache();
+  console.log("[CACHE] Liquidity cache ready");
 
   // ============================================================
   // 3. Warmup candle last close
@@ -147,17 +144,16 @@ console.log("[CACHE] Liquidity cache ready");
   fastify.get("/tokens/:address/transactions",  getTransactionsByToken);
   fastify.get("/wallets/:address/transactions", getTransactionsByWallet);
 
-  fastify.get("/tokens/:address/events", getEvents);
-  fastify.get("/tokens/:address/events/:wallet", getEventsByAddress); // [ADDED] filter events by wallet
+  fastify.get("/tokens/:address/events",         getEvents);
+  fastify.get("/tokens/:address/events/:wallet", getEventsByAddress);
   fastify.get("/platform/stats",  getPlatformStats);
   fastify.get("/platform/chart",  getPlatformVolumeChart);
 
+  // [ADDED] Gas price endpoint — cache 15s, hemat RPC
+  fastify.get("/utils/gas-price", getGasPrice);
+
   // [ADDED] health check endpoint untuk monitoring
-fastify.get("/health", async () => {
-  return { status: "ok" };
-});
-
-
+  fastify.get("/health", async () => ({ status: "ok" }));
 
   await fastify.register(debugRoutes);
 
@@ -173,16 +169,13 @@ fastify.get("/health", async () => {
 
   await fastify.listen({ port: 3000, host: "0.0.0.0" });
 
-  // [MODIFIED] gunakan BASE_URL dari env jika ada
-const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
-
-console.log(`[SERVER] API   → ${BASE_URL}`);
-const WS_BASE = BASE_URL.startsWith("https")
-  ? BASE_URL.replace("https", "wss")
-  : BASE_URL.replace("http", "ws");
-
-console.log(`[SERVER] WS    → ${WS_BASE}/ws`);
-console.log(`[SERVER] Stats → ${BASE_URL}/ws/stats`);
+  const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
+  console.log(`[SERVER] API   → ${BASE_URL}`);
+  const WS_BASE = BASE_URL.startsWith("https")
+    ? BASE_URL.replace("https", "wss")
+    : BASE_URL.replace("http", "ws");
+  console.log(`[SERVER] WS    → ${WS_BASE}/ws`);
+  console.log(`[SERVER] Stats → ${BASE_URL}/ws/stats`);
 
   // ============================================================
   // 8. Start candle systems
@@ -190,7 +183,6 @@ console.log(`[SERVER] Stats → ${BASE_URL}/ws/stats`);
 
   startCandleFlush();
   startCandleRepair();
-
   console.log("[CANDLE] Flush loop started");
 
   // ============================================================
