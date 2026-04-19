@@ -150,7 +150,7 @@ async function _handleCreate({ tx, receipt, block, blockNumber }) {
       devAddress   = safeLower(decoded[1]);     // [MODIFIED] wallet dev
 
       const launchInfo = await processLaunch(tokenAddress, {
-        onchainLaunchTime: new Date(block.timestamp * 1000)
+        onchainLaunchTime: new Date(block.timestamp * 1000).toISOString()
       });
 
       if (!launchInfo?.basePair) return;
@@ -208,7 +208,7 @@ async function _handleCreate({ tx, receipt, block, blockNumber }) {
 
       await insertTransaction({
         tokenAddress,
-        time: new Date(block.timestamp * 1000),
+        time: new Date(block.timestamp * 1000).toISOString(),
         blockNumber,
         txHash: tx.hash,
         position: "BUY",
@@ -321,7 +321,7 @@ if (!baseAddress) {
 
     await insertTransaction({
       tokenAddress,
-      time: new Date(block.timestamp * 1000),
+      time: new Date(block.timestamp * 1000).toISOString(),
       blockNumber,
       txHash: tx.hash,
       position,
@@ -486,7 +486,7 @@ async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
 
   await setTokenMigrated(
     tokenAddress,
-    new Date(block.timestamp * 1000)
+    new Date(block.timestamp * 1000).toISOString()
   );
 
   await insertTokenMigrate({
@@ -507,7 +507,7 @@ async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
 
   await insertTransaction({
     tokenAddress,
-    time: new Date(block.timestamp * 1000),
+    time: new Date(block.timestamp * 1000).toISOString(),
     blockNumber,
     txHash: tx.hash,
     position: "ADD_LIQUIDITY",

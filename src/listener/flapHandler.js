@@ -375,7 +375,7 @@ async function _handleCreate({ tx, logs, block, blockNumber }) {
     console.log(`[FLAP REGISTRY] token registered via CREATE: ${tokenAddress}`);
 
     await insertLaunch({
-      launchTime: new Date(block.timestamp * 1000),
+      launchTime: new Date(block.timestamp * 1000).toISOString(),
       tokenAddress,
       developer: creator,
       name, symbol,
@@ -456,7 +456,7 @@ async function _handleCreate({ tx, logs, block, blockNumber }) {
 
     await insertTransaction({
       tokenAddress,
-      time: new Date(block.timestamp * 1000),
+      time: new Date(block.timestamp * 1000).toISOString(),
       blockNumber,
       txHash: tx.hash,
       position: "BUY",
@@ -561,7 +561,7 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
 
     await insertTransaction({
       tokenAddress: trade.token,
-      time: new Date(block.timestamp * 1000),
+      time: new Date(block.timestamp * 1000).toISOString(),
       blockNumber,
       txHash: tx.hash,
       position,
@@ -612,7 +612,7 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
       sender: tx.from
     });
 
-    await setTokenMigrated(tokenAddress, new Date(block.timestamp * 1000));
+    await setTokenMigrated(tokenAddress, new Date(block.timestamp * 1000).toISOString());
 
     await insertTokenMigrate({ tokenAddress, pairAddress, baseAddress, baseSymbol, blockNumber, txHash: tx.hash });
 
@@ -625,7 +625,7 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
 
     await insertTransaction({
       tokenAddress,
-      time: new Date(block.timestamp * 1000),
+      time: new Date(block.timestamp * 1000).toISOString(),
       blockNumber,
       txHash: tx.hash,
       position: "ADD_LIQUIDITY",
@@ -719,7 +719,7 @@ async function _autoRegister({ tx, trade, block, blockNumber }) {
   addFlapTokenToMemory(trade.token);
 
   await insertLaunch({
-    launchTime: new Date(block.timestamp * 1000),
+    launchTime: new Date(block.timestamp * 1000).toISOString(),
     tokenAddress: trade.token,
     developer: tx.from,
     name: fields.name,

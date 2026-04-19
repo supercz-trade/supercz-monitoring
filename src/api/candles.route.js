@@ -3,8 +3,6 @@
 // ===============================================================
 
 import { db } from "../infra/database.js";
-// [ADDED]
-
 
 // ===============================================================
 // CONFIG
@@ -20,7 +18,6 @@ const ALLOWED_TIMEFRAMES = new Set([
 // UTILS
 // ===============================================================
 
-// [ADDED] basic address validation
 function isValidAddress(address) {
   return typeof address === "string" && /^0x[a-fA-F0-9]{40}$/.test(address);
 }
@@ -37,7 +34,6 @@ export async function getCandles(req, reply) {
     const timeframe = req.query.tf || "1m";
     const limit = Math.min(Number(req.query.limit) || 1000, 1000);
 
-    // [ADDED] validation
     if (!isValidAddress(address)) {
       return reply.code(400).send({ error: "invalid_address" });
     }
@@ -73,7 +69,7 @@ export async function getCandles(req, reply) {
     }));
 
   } catch (err) {
-    console.error("[CANDLE API ERROR]", err); // [MODIFIED]
+    console.error("[CANDLE API ERROR]", err);
     return reply.code(500).send({ error: "failed_to_fetch_candles" });
   }
 
@@ -96,17 +92,15 @@ export async function getEvents(req, reply) {
 
     const { rows } = await db.query(`
       SELECT
-        EXTRACT(EPOCH FROM (time AT TIME ZONE 'UTC' - INTERVAL '8 hours'))::bigint AS time_epoch,
+        EXTRACT(EPOCH FROM time AT TIME ZONE 'UTC')::bigint AS time_epoch,
         position,
         is_dev,
         tag_address,
         tx_hash,
         address_message_sender,
-
         amount_receive,
         in_usdt_payable,
         price_usdt
-
       FROM token_transactions
       WHERE LOWER(token_address) = LOWER($1)
         AND (
@@ -122,7 +116,6 @@ export async function getEvents(req, reply) {
       const time = Number(tx.time_epoch);
       if (!time || isNaN(time)) return null;
 
-      // [ADDED] safe stats
       const usd   = Number(tx.in_usdt_payable ?? 0);
       const token = Number(tx.amount_receive ?? 0);
       const price = Number(tx.price_usdt ?? 0);
@@ -194,36 +187,33 @@ export async function getEvents(req, reply) {
 }
 
 // ===============================================================
-// [ADDED] GET EVENTS BY WALLET ADDRESS
+// GET EVENTS BY WALLET ADDRESS
 // ===============================================================
 export async function getEventsByAddress(req, reply) {
 
   try {
 
-    const { address, wallet } = req.params; // [ADDED]
+    const { address, wallet } = req.params;
     const limit = Math.min(Number(req.query.limit) || 500, 100);
 
-    // [ADDED] validation
     if (!isValidAddress(address) || !isValidAddress(wallet)) {
       return reply.code(400).send({ error: "invalid_address" });
     }
 
     const { rows } = await db.query(`
       SELECT
-        EXTRACT(EPOCH FROM (time AT TIME ZONE 'UTC' - INTERVAL '8 hours'))::bigint AS time_epoch,
+        EXTRACT(EPOCH FROM time AT TIME ZONE 'UTC')::bigint AS time_epoch,
         position,
         is_dev,
         tag_address,
         tx_hash,
         address_message_sender,
-
         amount_receive,
         in_usdt_payable,
         price_usdt
-
       FROM token_transactions
       WHERE LOWER(token_address) = LOWER($1)
-        AND LOWER(address_message_sender) = LOWER($2) -- [ADDED] filter wallet
+        AND LOWER(address_message_sender) = LOWER($2)
       ORDER BY time DESC
       LIMIT $3
     `, [address, wallet, limit]);
@@ -240,12 +230,12 @@ export async function getEventsByAddress(req, reply) {
 
       const stats = {
         buy: {
-          txCount: tx.position === "BUY" ? 1 : 0, // [MODIFIED] remove is_dev constraint
+          txCount: tx.position === "BUY" ? 1 : 0,
           totalUsd: tx.position === "BUY" ? usd : 0,
           totalToken: tx.position === "BUY" ? token : 0
         },
         sell: {
-          txCount: tx.position === "SELL" ? 1 : 0, // [MODIFIED]
+          txCount: tx.position === "SELL" ? 1 : 0,
           totalUsd: tx.position === "SELL" ? usd : 0,
           totalToken: tx.position === "SELL" ? Math.abs(token) : 0
         },
@@ -255,7 +245,7 @@ export async function getEventsByAddress(req, reply) {
       if (tx.position === "BUY") {
         return {
           time,
-          type: "BUY", // [ADDED]
+          type: "BUY",
           label: "B",
           color: "#22c55e",
           txHash: tx.tx_hash,
@@ -267,7 +257,7 @@ export async function getEventsByAddress(req, reply) {
       if (tx.position === "SELL") {
         return {
           time,
-          type: "SELL", // [ADDED]
+          type: "SELL",
           label: "S",
           color: "#ef4444",
           txHash: tx.tx_hash,
@@ -283,7 +273,7 @@ export async function getEventsByAddress(req, reply) {
     return events;
 
   } catch (err) {
-    console.error("[EVENT BY ADDRESS ERROR]", err.message); // [ADDED]
+    console.error("[EVENT BY ADDRESS ERROR]", err.message);
     return reply.code(500).send({
       error: "failed_to_fetch_events_by_address",
       message: err.message

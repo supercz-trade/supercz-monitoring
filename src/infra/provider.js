@@ -13,21 +13,59 @@ const RECONNECT_MAX = 30000;
 let reconnectDelay  = RECONNECT_MIN;
 let _wssProvider    = null;
 let lastBlockTime   = Date.now();
-let _blockListeners = [];   // simpan semua listener block yang didaftarkan
+let _blockListeners = [];
 let _reconnectTimer = null;
 let _destroyed      = false;
 
-// ================= GETTER =================
-// FIX: export fungsi getter, bukan nilai langsung.
-// Kalau export nilai: blockDispatcher.js pegang referensi provider LAMA
-// selamanya — provider baru dari reconnect tidak pernah dipakai.
+// ================= RPC POOL =================
+
+const RPC_BASE_URL = process.env.BSC_RPC_URL;
+
+const API_KEYS = process.env.API_KEY
+  ? process.env.API_KEY.split(",").map(k => k.trim()).filter(Boolean)
+  : [];
+
+const RPC_URLS = API_KEYS.length > 0
+  ? API_KEYS.map(key => `${RPC_BASE_URL}${key}`)
+  : [RPC_BASE_URL];
+
+const _rpcLogsCache = new Map();
+const _rpcTxCache   = new Map();
+
+function getOrCreate(url, cache) {
+  if (!cache.has(url)) {
+    cache.set(url, new JsonRpcProvider(url, BSC_NETWORK, { staticNetwork: BSC_NETWORK }));
+  }
+  return cache.get(url);
+}
+
+function randomUrl() {
+  return RPC_URLS[Math.floor(Math.random() * RPC_URLS.length)];
+}
+
+// ================= RPC PROXY =================
+// Proxy agar bisa dipakai langsung seperti provider biasa
+// tanpa () — dan setiap method call random ke key berbeda
+
+function makeRandomProxy(cache) {
+  return new Proxy({}, {
+    get(_, prop) {
+      const provider = getOrCreate(randomUrl(), cache);
+      const val = provider[prop];
+      return typeof val === "function" ? val.bind(provider) : val;
+    }
+  });
+}
+
+export const rpcLogsProvider = makeRandomProxy(_rpcLogsCache);
+export const rpcTxProvider   = makeRandomProxy(_rpcTxCache);
+
+// ================= WSS GETTER =================
 
 export function getWssProvider() {
   return _wssProvider;
 }
 
-// Agar blockDispatcher bisa daftar listener tanpa pegang ref provider
-// langsung. Saat reconnect, listener otomatis dipasang ke provider baru.
 export function onBlock(listener) {
   _blockListeners.push(listener);
   if (_wssProvider) _wssProvider.on("block", listener);
@@ -53,7 +91,6 @@ function createProvider() {
 
   provider.websocket?.addEventListener("close", () => {
     console.warn("[WSS] disconnected");
-    // Pastikan tidak double-reconnect
     if (!_destroyed) scheduleReconnect();
   });
 
@@ -65,7 +102,6 @@ function createProvider() {
     lastBlockTime = Date.now();
   });
 
-  // FIX: pasang ulang semua listener block yang terdaftar ke provider baru
   for (const listener of _blockListeners) {
     provider.on("block", listener);
   }
@@ -78,7 +114,6 @@ function createProvider() {
 
 function scheduleReconnect() {
 
-  // Hindari double-schedule
   if (_reconnectTimer) return;
 
   reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX);
@@ -87,7 +122,6 @@ function scheduleReconnect() {
   _reconnectTimer = setTimeout(() => {
     _reconnectTimer = null;
 
-    // Destroy provider lama dengan bersih
     try {
       _wssProvider?.removeAllListeners();
       _wssProvider?.websocket?.close();
@@ -103,7 +137,6 @@ function scheduleReconnect() {
 _wssProvider = createProvider();
 
 // ================= HEARTBEAT =================
-// mencegah idle disconnect
 
 setInterval(async () => {
 
@@ -117,7 +150,6 @@ setInterval(async () => {
 }, 20000);
 
 // ================= BLOCK WATCHDOG =================
-// jika block berhenti > 60 detik → reconnect
 
 setInterval(() => {
 
@@ -125,26 +157,13 @@ setInterval(() => {
 
   if (diff > 60000) {
     console.warn("[WATCHDOG] block stuck, forcing reconnect");
-    // Reset delay supaya reconnect cepat saat watchdog trigger
     reconnectDelay = RECONNECT_MIN;
     scheduleReconnect();
   }
 
 }, 30000);
 
-// ================= RPC PROVIDERS =================
+// ================= INFO =================
 
-export const rpcLogsProvider = new JsonRpcProvider(
-  process.env.BSC_RPC_LOGS,
-  BSC_NETWORK,
-  { staticNetwork: BSC_NETWORK }
-);
-
-export const rpcTxProvider = new JsonRpcProvider(
-  process.env.BSC_RPC_TX,
-  BSC_NETWORK,
-  { staticNetwork: BSC_NETWORK }
-);
-
-console.log("[PROVIDER] RPC LOGS connected");
-console.log("[PROVIDER] RPC TX connected");
+console.log(`[PROVIDER] WSS block listener ready`);
+console.log(`[PROVIDER] RPC pool ready — ${RPC_URLS.length} endpoint(s)`);

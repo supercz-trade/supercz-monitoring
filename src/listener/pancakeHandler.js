@@ -288,7 +288,7 @@ async function init() {
 //       // =========================
 //       await insertTransaction({
 //         tokenAddress,
-//         time: new Date(block.timestamp * 1000),
+//         time: new Date(block.timestamp * 1000).toISOString(),
 //         blockNumber: logEntry.blockNumber,
 //         txHash: tx.hash,
 //         position,
@@ -543,7 +543,7 @@ let wallet = tx.from?.toLowerCase();
 
     await insertTransaction({
       tokenAddress,
-      time: new Date(block.timestamp * 1000),
+      time: new Date(block.timestamp * 1000).toISOString(),
       blockNumber,
       txHash: tx.hash,
       position,
