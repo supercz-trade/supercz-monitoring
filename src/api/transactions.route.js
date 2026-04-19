@@ -30,7 +30,7 @@ export async function getTransactionsByToken(req, reply) {
     const { rows } = await db.query(`
       SELECT
         tx_hash,
-        time,
+        EXTRACT(EPOCH FROM time AT TIME ZONE 'UTC')::bigint AS time,
         position,
         price_usdt,
         amount_receive         AS amount_token,
@@ -85,7 +85,7 @@ export async function getTransactionsByWallet(req, reply) {
         SELECT
           token_address,
           tx_hash,
-          time,
+          EXTRACT(EPOCH FROM time AT TIME ZONE 'UTC')::bigint AS time,
           position,
           price_usdt,
           amount_receive         AS amount_token,
