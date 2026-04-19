@@ -1,5 +1,5 @@
 // ===============================================================
-// bonding.service.js (FINAL - USD NORMALIZED + BONDING LIQUIDITY)
+// bonding.service.js (FINAL CLEAN - NO BUG)
 // ===============================================================
 
 import { db } from "../infra/database.js";
@@ -41,14 +41,11 @@ export async function updateBondingProgress({
     baseSymbol
   });
 
-  // =========================
-  // NORMALIZE INPUT
-  // =========================
   const amount = Number(baseAmount) || 0;
   if (!amount || !baseSymbol) return;
 
   // =========================
-  // CONVERT TO USD
+  // GET PRICE
   // =========================
   let basePrice = 0;
 
@@ -58,15 +55,21 @@ export async function updateBondingProgress({
     console.error("[BONDING] price error:", err.message);
   }
 
+  if (!basePrice) return;
+
+  // =========================
+  // CONVERT TO USD DELTA
+  // =========================
   const amountUSD = amount * basePrice;
 
-  const delta = position === "BUY"
-    ? amountUSD
-    : position === "SELL"
-    ? -amountUSD
-    : 0;
+  const deltaUSD =
+    position === "BUY"
+      ? amountUSD
+      : position === "SELL"
+      ? -amountUSD
+      : 0;
 
-  if (!delta) return;
+  if (!deltaUSD) return;
 
   // =========================
   // GET PREVIOUS STATE
@@ -78,37 +81,20 @@ export async function updateBondingProgress({
   `, [tokenAddress]);
 
   const prev = rows[0] || {};
-  // [MODIFIED] FIX BASE vs USD
-const prevBondingBase = Number(prev.bonding_base || 0);
 
-// convert USD → BASE
-const deltaBase = basePrice > 0 ? delta / basePrice : 0;
-
-const bondingBase = Math.max(prevBondingBase + deltaBase, 0);
-
-// baru hitung USD
-const bondingUSD = bondingBase * basePrice;
+  const prevBondingBase = Number(prev.bonding_base || 0);
 
   // =========================
-  // DEBUG BEFORE
+  // CORE FIX (BASE FIRST 🔥)
   // =========================
-  pushAggLog({
-    stage: "BONDING_BEFORE",
-    tokenAddress,
-    prevBonding,
-    delta,
-    position,
-    baseAmount,
-    baseSymbol
-  });
+  const deltaBase = deltaUSD / basePrice;
+
+  const bondingBase = Math.max(prevBondingBase + deltaBase, 0);
+
+  const bondingUSD = bondingBase * basePrice;
 
   // =========================
-  // BONDING IN USD
-  // =========================
-  
-
-  // =========================
-  // TARGET FIX (IMPORTANT 🔥)
+  // TARGET
   // =========================
   let target = Number(prev.estimated_target);
 
@@ -119,36 +105,24 @@ const bondingUSD = bondingBase * basePrice;
   // =========================
   // PROGRESS
   // =========================
-  const progress = target > 0
-    ? bondingUSD / target
-    : 0;
+  const progress = target > 0 ? bondingUSD / target : 0;
 
   // =========================
-  // RESET DETECTOR
-  // =========================
-  if (prevBonding > bondingUSD) {
-    pushAggLog({
-      stage: "BONDING_RESET_DETECTED",
-      tokenAddress,
-      prev: prevBonding,
-      next: bondingUSD
-    });
-  }
-
-  // =========================
-  // DEBUG BEFORE DB
+  // DEBUG
   // =========================
   pushAggLog({
-    stage: "BONDING_BEFORE_DB",
+    stage: "BONDING_CALC",
     tokenAddress,
-    prevBonding,
+    prevBondingBase,
+    deltaUSD,
+    bondingBase,
     bondingUSD,
-    delta,
-    target
+    target,
+    progress
   });
 
   // =========================
-  // UPSERT (FIX CORE BUG 🔥)
+  // UPSERT (FIXED 🔥)
   // =========================
   await db.query(`
     INSERT INTO token_liquidity_state (
@@ -161,7 +135,7 @@ const bondingUSD = bondingBase * basePrice;
       mode,
       updated_at
     )
-    VALUES ($1, $2, $2, $3, $4, $5, $6, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
     ON CONFLICT (token_address)
     DO UPDATE SET
       bonding_base = EXCLUDED.bonding_base,
@@ -173,34 +147,16 @@ const bondingUSD = bondingBase * basePrice;
       updated_at = NOW()
   `, [
     tokenAddress,
-    bondingBase,  // ✅ BASE
-    bondingUSD,   // ✅ USD
+    bondingBase, // BASE
+    bondingUSD,  // USD
     target,
     progress,
-    "bonding", // platform
-    "bonding"  // mode
+    "bonding",
+    "bonding"
   ]);
 
   // =========================
-  // DEBUG AFTER DB
-  // =========================
-  pushAggLog({
-    stage: "BONDING_AFTER_DB",
-    tokenAddress,
-    bondingUSD,
-    target,
-    progress
-  });
-
-  // =========================
-  // CALCULATE BASE VALUE
-  // =========================
-  const bondingBase = basePrice > 0
-    ? bondingUSD / basePrice
-    : 0;
-
-  // =========================
-  // CACHE MERGE
+  // CACHE UPDATE
   // =========================
   const prevCache = getLiquidityStateCache(tokenAddress) || {};
 
@@ -216,11 +172,8 @@ const bondingUSD = bondingBase * basePrice;
     base_symbol: baseSymbol
   };
 
-  // =========================
-  // DEBUG AFTER CACHE
-  // =========================
   pushAggLog({
-    stage: "BONDING_AFTER_CACHE",
+    stage: "BONDING_CACHE",
     tokenAddress,
     nextState
   });
