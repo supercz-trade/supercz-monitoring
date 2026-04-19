@@ -39,6 +39,10 @@ export function updateCandle({ tokenAddress, priceUSDT, inUSDTPayable, time }) {
     ts = Math.floor(time.getTime() / 1000);
   } else if (typeof time === "number") {
     ts = time > 1e12 ? Math.floor(time / 1000) : Math.floor(time);
+  } else if (typeof time === "string") {
+    const ms = new Date(time).getTime();
+    if (isNaN(ms)) return;
+    ts = Math.floor(ms / 1000);
   } else {
     return;
   }
