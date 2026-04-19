@@ -479,208 +479,256 @@ async function _handleCreate({ tx, logs, block, blockNumber }) {
 // BUY / SELL / ADD LIQUIDITY
 // ===============================================================
 
+// ===============================================================
+// BUY / SELL / ADD LIQUIDITY (ANTI-MISS VERSION)
+// ===============================================================
+
+// [MODIFIED] FULL REWRITE - ANTI MISS MIGRATION
 async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" }) {
 
-  let trade = null;
-  let position = null;
-  let addLiquidity = null;
+  const trades = [];              // [ADDED] support multi trade
+  const addLiquidityEvents = [];  // [ADDED] support multi migrate
 
+  // ================= PARSE ALL LOGS =================
   for (const evLog of logs) {
 
     const topic = evLog.topics[0];
 
-    if (topic === TOPICS.TOKEN_BOUGHT) {
-      const d = _decode(["uint256", "address", "address", "uint256", "uint256", "uint256", "uint256"], evLog.data);
-      trade = { token: d[1].toLowerCase(), wallet: d[2].toLowerCase(), amount: d[3], base: d[4], fee: d[5] };
-      position = "BUY";
-    }
+    try {
 
-    if (topic === TOPICS.TOKEN_SOLD) {
-      const d = _decode(["uint256", "address", "address", "uint256", "uint256", "uint256", "uint256"], evLog.data);
-      trade = { token: d[1].toLowerCase(), wallet: d[2].toLowerCase(), amount: d[3], base: d[4], fee: d[5] };
-      position = "SELL";
-    }
+      if (topic === TOPICS.TOKEN_BOUGHT) {
+        const d = _decode(["uint256", "address", "address", "uint256", "uint256", "uint256", "uint256"], evLog.data);
 
-    if (topic === TOPICS.LAUNCHED_TO_DEX) {
-      const d = _decode(["address", "address", "uint256", "uint256"], evLog.data);
-      addLiquidity = {
-        tokenAddress: d[0].toLowerCase(),
-        pairAddress: d[1].toLowerCase(),
-        tokenAmount: d[2],
-        baseAmount: d[3]
-      };
-    }
+        trades.push({
+          token: d[1].toLowerCase(),
+          wallet: d[2].toLowerCase(),
+          amount: d[3],
+          base: d[4],
+          fee: d[5],
+          position: "BUY"
+        });
+      }
 
+      if (topic === TOPICS.TOKEN_SOLD) {
+        const d = _decode(["uint256", "address", "address", "uint256", "uint256", "uint256", "uint256"], evLog.data);
+
+        trades.push({
+          token: d[1].toLowerCase(),
+          wallet: d[2].toLowerCase(),
+          amount: d[3],
+          base: d[4],
+          fee: d[5],
+          position: "SELL"
+        });
+      }
+
+      if (topic === TOPICS.LAUNCHED_TO_DEX) {
+        const d = _decode(["address", "address", "uint256", "uint256"], evLog.data);
+
+        addLiquidityEvents.push({
+          tokenAddress: d[0].toLowerCase(),
+          pairAddress: d[1].toLowerCase(),
+          tokenAmount: d[2],
+          baseAmount: d[3]
+        });
+      }
+
+    } catch (err) {
+      console.warn("[FLAP DECODE SKIP]", err.message);
+      continue;
+    }
   }
 
-  if (!trade && !addLiquidity) return;
+  // ================= DEBUG =================
+  console.log("[DEBUG MIGRATE]", {
+    tx: tx.hash,
+    trades: trades.length,
+    addLiquidity: addLiquidityEvents.length,
+    logs: logs.length,
+    source
+  });
 
-  let launchInfo = await getLaunchByToken(trade?.token || addLiquidity.tokenAddress);
+  // ===============================================================
+  // 🔥 PRIORITY 1: HANDLE MIGRATION FIRST (ANTI MISS CORE)
+  // ===============================================================
 
-  // ================= AUTO REGISTER =================
+  for (const addLiquidity of addLiquidityEvents) {
 
-  if (!launchInfo && trade) {
-    launchInfo = await _autoRegister({ tx, trade, block, blockNumber });
-    if (!launchInfo) return;
+    try {
+
+      let launchInfo = await getLaunchByToken(addLiquidity.tokenAddress);
+
+      // [ADDED] AUTO RECOVER
+      if (!launchInfo) {
+        console.warn("[MIGRATE AUTO-REGISTER]", addLiquidity.tokenAddress);
+
+        // fallback minimal
+        launchInfo = {
+          tokenAddress: addLiquidity.tokenAddress,
+          basePair: "BNB",
+          baseAddress: null,
+          decimals: 18
+        };
+      }
+
+      const basePrice = getBasePrice(launchInfo.basePair);
+
+      const tokenAmt = Number(ethers.formatUnits(addLiquidity.tokenAmount, launchInfo.decimals ?? 18));
+      const baseAmt  = Number(ethers.formatUnits(addLiquidity.baseAmount, 18));
+
+      const priceBase  = tokenAmt > 0 ? baseAmt / tokenAmt : 0;
+      const priceUSDT  = priceBase * basePrice;
+      const volumeUSDT = baseAmt * basePrice;
+
+      const { tokenAddress, pairAddress } = addLiquidity;
+
+      console.log(`[ANTI-MISS MIGRATE] token=${tokenAddress} pair=${pairAddress} tx=${tx.hash}`);
+
+      // ================= CORE ACTION =================
+
+      await setTokenMigrated(tokenAddress, new Date(block.timestamp * 1000).toISOString());
+
+      await insertTokenMigrate({
+        tokenAddress,
+        pairAddress,
+        baseAddress: launchInfo.baseAddress,
+        baseSymbol: launchInfo.basePair,
+        blockNumber,
+        txHash: tx.hash
+      });
+
+      addPairToMemory({
+        pairAddress,
+        tokenAddress,
+        baseAddress: launchInfo.baseAddress,
+        baseSymbol: launchInfo.basePair
+      });
+
+      await insertTransaction({
+        tokenAddress,
+        time: new Date(block.timestamp * 1000).toISOString(),
+        blockNumber,
+        txHash: tx.hash,
+        position: "ADD_LIQUIDITY",
+        amountReceive: tokenAmt,
+        basePayable: launchInfo.basePair,
+        amountBasePayable: baseAmt,
+        inUSDTPayable: volumeUSDT,
+        priceBase,
+        priceUSDT,
+        addressMessageSender: tx.from,
+        tagAddress: null,
+        isDev: false
+      });
+
+      await insertPairLiquidity({
+        tokenAddress,
+        baseAddress: launchInfo.baseAddress,
+        pairAddress,
+        baseSymbol: launchInfo.basePair,
+        liquidityToken: tokenAmt,
+        liquidityBase: baseAmt,
+        blockNumber,
+        txHash: tx.hash
+      });
+
+      await updateMigrationStats(volumeUSDT);
+
+      await updateLiquidityState({
+        tokenAddress,
+        platform: "dex",
+        mode: "dex",
+        baseAddress: launchInfo.baseAddress,
+        baseSymbol: launchInfo.basePair,
+        baseLiquidity: baseAmt,
+        tokenLiquidity: tokenAmt,
+        priceBase,
+        isMigrated: true,
+        pairAddress
+      });
+
+      // [ADDED] HARD DELETE FROM FLAP SET
+      await deleteTokenFlap(tokenAddress);
+      flapTokenSet.delete(tokenAddress);
+
+      publish("migrate", {
+        tokenAddress,
+        pairAddress,
+        baseSymbol: launchInfo.basePair,
+        priceUSDT,
+        timestamp: block.timestamp * 1000
+      });
+
+    } catch (err) {
+      console.error("[ANTI-MISS MIGRATE ERROR]", err.message);
+    }
   }
 
-  if (!launchInfo) return;
+  // ===============================================================
+  // 🔹 SECOND: HANDLE TRADES (AFTER MIGRATE)
+  // ===============================================================
 
-  // ================= TRADE =================
+  for (const trade of trades) {
 
-  if (trade) {
+    try {
 
-    const basePrice = getBasePrice(launchInfo.basePair);
-    const tokenAmt = Number(ethers.formatUnits(trade.amount, launchInfo.decimals ?? 18));
-    const basePaid = Number(ethers.formatUnits(trade.base - trade.fee, 18));
-    const baseAmount = Number(ethers.formatUnits(trade.base, 18));
-    const priceBase = tokenAmt > 0 ? baseAmount / tokenAmt : 0;
-    const priceUSDT = priceBase * basePrice;
-    const volumeUSDT = baseAmount * basePrice;
-    const isDev = trade.wallet === launchInfo.developerAddress;
+      let launchInfo = await getLaunchByToken(trade.token);
 
-    console.log(`[FLAP TRADE] source=${source.toUpperCase()} token=${trade.token} wallet=${trade.wallet} tx=${tx.hash}`);
+      if (!launchInfo) {
+        launchInfo = await _autoRegister({ tx, trade, block, blockNumber });
+        if (!launchInfo) continue;
+      }
 
-    logTrade({
-      platform: "flap",
-      position,
-      tokenAddress: trade.token,
-      tokenSymbol: launchInfo.symbol,
-      tokenAmount: tokenAmt,
-      baseSymbol: launchInfo.basePair,
-      baseAmount: basePaid,
-      priceBase,
-      priceUSDT,
-      volumeUSDT,
-      txHash: tx.hash,
-      blockNumber,
-      timestamp: block.timestamp * 1000,
-      wallet: trade.wallet,
-      isDev
-    });
+      const basePrice = getBasePrice(launchInfo.basePair);
 
-    await insertTransaction({
-      tokenAddress: trade.token,
-      time: new Date(block.timestamp * 1000).toISOString(),
-      blockNumber,
-      txHash: tx.hash,
-      position,
-      amountReceive: tokenAmt,
-      basePayable: launchInfo.basePair,
-      amountBasePayable: basePaid,
-      inUSDTPayable: volumeUSDT,
-      priceBase,
-      priceUSDT,
-      addressMessageSender: trade.wallet,
-      tagAddress: isDev ? "Developer" : null,
-      isDev
-    });
+      const tokenAmt = Number(ethers.formatUnits(trade.amount, launchInfo.decimals ?? 18));
+      const basePaid = Number(ethers.formatUnits(trade.base - trade.fee, 18));
+      const baseAmount = Number(ethers.formatUnits(trade.base, 18));
 
-  }
+      const priceBase  = tokenAmt > 0 ? baseAmount / tokenAmt : 0;
+      const priceUSDT  = priceBase * basePrice;
+      const volumeUSDT = baseAmount * basePrice;
 
-  // ================= ADD LIQUIDITY =================
+      const isDev = trade.wallet === launchInfo.developerAddress;
 
-  if (addLiquidity) {
+      logTrade({
+        platform: "flap",
+        position: trade.position,
+        tokenAddress: trade.token,
+        tokenSymbol: launchInfo.symbol,
+        tokenAmount: tokenAmt,
+        baseSymbol: launchInfo.basePair,
+        baseAmount: basePaid,
+        priceBase,
+        priceUSDT,
+        volumeUSDT,
+        txHash: tx.hash,
+        blockNumber,
+        timestamp: block.timestamp * 1000,
+        wallet: trade.wallet,
+        isDev
+      });
 
-    const basePrice = getBasePrice(launchInfo.basePair);
-    const tokenAmt = Number(ethers.formatUnits(addLiquidity.tokenAmount, launchInfo.decimals ?? 18));
-    const baseAmt = Number(ethers.formatUnits(addLiquidity.baseAmount, 18));
-    const priceBase = tokenAmt > 0 ? baseAmt / tokenAmt : 0;
-    const priceUSDT = priceBase * basePrice;
-    const volumeUSDT = baseAmt * basePrice;
+      await insertTransaction({
+        tokenAddress: trade.token,
+        time: new Date(block.timestamp * 1000).toISOString(),
+        blockNumber,
+        txHash: tx.hash,
+        position: trade.position,
+        amountReceive: tokenAmt,
+        basePayable: launchInfo.basePair,
+        amountBasePayable: basePaid,
+        inUSDTPayable: volumeUSDT,
+        priceBase,
+        priceUSDT,
+        addressMessageSender: trade.wallet,
+        tagAddress: isDev ? "Developer" : null,
+        isDev
+      });
 
-    const { tokenAddress, pairAddress } = addLiquidity;
-    const baseAddress = launchInfo.baseAddress;
-    const baseSymbol = launchInfo.basePair;
-
-    console.log(`[FLAP ADD_LIQ] source=${source.toUpperCase()} token=${tokenAddress} pair=${pairAddress} tx=${tx.hash}`);
-
-    logAddLiquidity({
-      platform: "flap",
-      tokenAddress,
-      pairAddress,
-      baseSymbol,
-      baseAddress,
-      tokenAmount: tokenAmt,
-      baseAmount: baseAmt,
-      priceBase,
-      priceUSDT,
-      volumeUSDT,
-      txHash: tx.hash,
-      blockNumber,
-      timestamp: block.timestamp * 1000,
-      sender: tx.from
-    });
-
-    await setTokenMigrated(tokenAddress, new Date(block.timestamp * 1000).toISOString());
-
-    await insertTokenMigrate({ tokenAddress, pairAddress, baseAddress, baseSymbol, blockNumber, txHash: tx.hash });
-
-    addPairToMemory({
-      pairAddress,
-      tokenAddress,
-      baseAddress,
-      baseSymbol
-    });
-
-    await insertTransaction({
-      tokenAddress,
-      time: new Date(block.timestamp * 1000).toISOString(),
-      blockNumber,
-      txHash: tx.hash,
-      position: "ADD_LIQUIDITY",
-      amountReceive: tokenAmt,
-      basePayable: baseSymbol,
-      amountBasePayable: baseAmt,
-      inUSDTPayable: volumeUSDT,
-      priceBase,
-      priceUSDT,
-      addressMessageSender: tx.from,
-      tagAddress: null,
-      isDev: false
-    });
-
-    await insertPairLiquidity({
-      tokenAddress, baseAddress, pairAddress, baseSymbol,
-      liquidityToken: tokenAmt,
-      liquidityBase: baseAmt,
-      blockNumber,
-      txHash: tx.hash
-    });
-
-    await updateMigrationStats(volumeUSDT);
-
-    // [ADDED]
-    await updateLiquidityState({
-      tokenAddress,
-      platform: "dex",
-      mode: "dex",
-
-      baseAddress,
-      baseSymbol,
-
-      baseLiquidity: baseAmt,
-      tokenLiquidity: tokenAmt,
-
-      priceBase,
-      isMigrated: true,
-      pairAddress
-    });
-
-
-
-    await deleteTokenFlap(tokenAddress);
-    flapTokenSet.delete(tokenAddress);
-
-
-    publish("migrate", {
-      tokenAddress,
-      pairAddress,
-      baseSymbol,
-      priceUSDT,
-      timestamp: block.timestamp * 1000
-    });
-
+    } catch (err) {
+      console.error("[FLAP TRADE ERROR]", err.message);
+    }
   }
 
 }

@@ -108,10 +108,9 @@ export async function handleFourmemeBlock({ txMap, block, blockNumber }) {
         continue;
       }
 
-      if (method === ADD_LIQ_SELECTOR) {
-        const handled = await _handleAddLiquidity({ tx, receipt, block, blockNumber });
-        if (handled) continue;
-      }
+      // [MODIFIED] ALWAYS TRY DETECT MIGRATION
+const handled = await _handleAddLiquidity({ tx, receipt, block, blockNumber });
+if (handled) continue;
 
       await _handleBuySell({ tx, receipt, block, blockNumber });
 
@@ -342,71 +341,116 @@ if (!baseAddress) {
 
 }
 
-// ===============================================================
-// ADD LIQUIDITY (MIGRATE TO DEX)
-// ===============================================================
 
+// [MODIFIED] FULL FIX: fallback + auto recover + no duplicate
 async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
 
-  const pairCreatedLog = receipt.logs.find(
+  let pairCreatedLog = receipt.logs.find(
     l => l.topics?.[0] === TOPICS.PAIR_CREATED
   );
 
-  if (!pairCreatedLog) {
-    log.warn(`[ADD_LIQ] pairCreated not found`);
-    return false;
+  let pairAddress = null;
+  let token0 = null;
+  let token1 = null;
+
+  // ===============================================================
+  // 🔥 PRIMARY: PAIR_CREATED
+  // ===============================================================
+  if (pairCreatedLog) {
+
+    token0 = safeLower("0x" + pairCreatedLog.topics[1].slice(26));
+    token1 = safeLower("0x" + pairCreatedLog.topics[2].slice(26));
+
+    pairAddress = safeLower(
+      "0x" + pairCreatedLog.data.slice(26, 66)
+    );
+
+  } else {
+
+    console.warn("[MIGRATE FALLBACK] PAIR_CREATED not found, trying SYNC");
+
+    // ===============================================================
+    // 🔥 FALLBACK: SYNC
+    // ===============================================================
+    const syncFallback = receipt.logs.find(
+      l => l.topics?.[0] === TOPICS.SYNC
+    );
+
+    if (!syncFallback) {
+      console.warn("[MIGRATE FAIL] No PAIR_CREATED & NO SYNC");
+      return false;
+    }
+
+    pairAddress = safeLower(syncFallback.address);
+
+    try {
+      const pairContract = new ethers.Contract(pairAddress, [
+        "function token0() view returns(address)",
+        "function token1() view returns(address)"
+      ], rpcTxProvider);
+
+      token0 = safeLower(await pairContract.token0());
+      token1 = safeLower(await pairContract.token1());
+
+    } catch (err) {
+      console.error("[MIGRATE FALLBACK ERROR]", err.message);
+      return false;
+    }
   }
 
-
-
-  const token0 = safeLower("0x" + pairCreatedLog.topics[1].slice(26));
-  const token1 = safeLower("0x" + pairCreatedLog.topics[2].slice(26));
-
-  const pairAddress = safeLower(
-    "0x" + pairCreatedLog.data.slice(26, 66)
-  );
-
+  // ===============================================================
+  // 🔥 DETERMINE TOKEN / BASE
+  // ===============================================================
 
   let tokenAddress;
   let baseAddress;
 
   if (BASE_ADDRESS_MAP[token0]) {
-
     baseAddress  = token0;
     tokenAddress = token1;
-
   } else if (BASE_ADDRESS_MAP[token1]) {
-
     baseAddress  = token1;
     tokenAddress = token0;
-
-
   } else {
-
-
+    console.warn("[MIGRATE FAIL] Unknown base token");
     return false;
   }
 
+  // ===============================================================
+  // 🔥 AUTO RECOVER LAUNCH
+  // ===============================================================
+
   let launchInfo = await getLaunchByToken(tokenAddress);
 
-  // if (!launchInfo) {
+  if (!launchInfo) {
+    console.warn("[MIGRATE AUTO RECOVER]", tokenAddress);
 
+    try {
+      const result = await processLaunch(tokenAddress);
 
-  //   const result = await processLaunch(tokenAddress);
+      if (!result) {
+        console.warn("[MIGRATE RECOVER FAILED - processLaunch null]");
+        return false;
+      }
 
-  //   if (!result) {
-  //     return false;
-  //   }
+      launchInfo = await getLaunchByToken(tokenAddress);
 
-  //   launchInfo = await getLaunchByToken(tokenAddress);
+      if (!launchInfo) {
+        console.warn("[MIGRATE RECOVER FAILED - still null]");
+        return false;
+      }
 
-  //   if (!launchInfo) {
-  //     return false;
-  //   }
-
-  // }
+    } catch (err) {
+      console.error("[MIGRATE RECOVER ERROR]", err.message);
+      return false;
+    }
+  }
 
   const baseSymbol = launchInfo.basePair;
+
+  // ===============================================================
+  // 🔥 GET SYNC DATA (REAL LIQUIDITY)
+  // ===============================================================
 
   const syncLog = receipt.logs.find(
     l =>
@@ -415,6 +459,7 @@ async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
   );
 
   if (!syncLog) {
+    console.warn("[MIGRATE FAIL] SYNC not found for pair");
     return false;
   }
 
@@ -423,12 +468,10 @@ async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
   const reserve0 = BigInt("0x" + syncData.slice(0, 64));
   const reserve1 = BigInt("0x" + syncData.slice(64, 128));
 
-
   let tokenAmount;
   let baseAmount;
 
   if (token0 === tokenAddress) {
-
     tokenAmount = Number(
       ethers.formatUnits(reserve0, launchInfo.decimals ?? 18)
     );
@@ -436,9 +479,7 @@ async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
     baseAmount = Number(
       ethers.formatUnits(reserve1, 18)
     );
-
   } else {
-
     tokenAmount = Number(
       ethers.formatUnits(reserve1, launchInfo.decimals ?? 18)
     );
@@ -446,28 +487,36 @@ async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
     baseAmount = Number(
       ethers.formatUnits(reserve0, 18)
     );
-
   }
 
+  if (!tokenAmount || !baseAmount) {
+    console.warn("[MIGRATE FAIL] zero liquidity");
+    return false;
+  }
 
-  const priceBase = tokenAmount > 0 ? baseAmount / tokenAmount : 0;
+  // ===============================================================
+  // 🔥 PRICE CALC
+  // ===============================================================
 
+  const priceBase = baseAmount / tokenAmount;
 
   let basePriceUSD = getBasePrice(baseSymbol);
 
   if (!basePriceUSD) {
-
     for (let i = 0; i < 3 && !basePriceUSD; i++) {
       await new Promise(r => setTimeout(r, 500));
       basePriceUSD = getBasePrice(baseSymbol);
-    }
-
-    if (!basePriceUSD) {
     }
   }
 
   const priceUSDT  = priceBase * basePriceUSD;
   const volumeUSDT = baseAmount * basePriceUSD;
+
+  console.log(`[ANTI-MISS MIGRATE] token=${tokenAddress} pair=${pairAddress} tx=${tx.hash}`);
+
+  // ===============================================================
+  // 🔥 SAVE EVERYTHING
+  // ===============================================================
 
   logAddLiquidity({
     platform: "fourmeme",
@@ -501,11 +550,11 @@ async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
   });
 
   addPairToMemory({
-  pairAddress,
-  tokenAddress,
-  baseAddress,
-  baseSymbol
-});
+    pairAddress,
+    tokenAddress,
+    baseAddress,
+    baseSymbol
+  });
 
   await insertTransaction({
     tokenAddress,
@@ -535,26 +584,20 @@ async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
     txHash: tx.hash
   });
 
-await updateMigrationStats(volumeUSDT);
-  // [ADDED]
-await updateLiquidityState({
-  tokenAddress,
-  platform: "dex",
-  mode: "dex",
+  await updateMigrationStats(volumeUSDT);
 
-  baseAddress,
-  baseSymbol,
-
-  baseLiquidity: baseAmount,
-  tokenLiquidity: tokenAmount,
-
-  priceBase,
-  isMigrated: true,
-  pairAddress
-});
-
-
-
+  await updateLiquidityState({
+    tokenAddress,
+    platform: "dex",
+    mode: "dex",
+    baseAddress,
+    baseSymbol,
+    baseLiquidity: baseAmount,
+    tokenLiquidity: tokenAmount,
+    priceBase,
+    isMigrated: true,
+    pairAddress
+  });
 
   publish("migrate", {
     tokenAddress,
@@ -563,7 +606,6 @@ await updateLiquidityState({
     priceUSDT,
     timestamp: block.timestamp * 1000
   });
-
 
   return true;
 }
