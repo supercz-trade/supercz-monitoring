@@ -16,20 +16,13 @@ export async function warmupLiquidityCache() {
   try {
 
     // ── 1. Repair DB DEX: base_liquidity dari TX history ──────
+    // Pakai JOIN biasa, tidak ada subquery correlated supaya tidak block pool
     await db.query(`
       UPDATE token_liquidity_state tls
       SET
         base_liquidity = GREATEST(liq.base_amount + COALESCE(net.net_flow, 0), 0),
-        liquidity_usd  = GREATEST(liq.base_amount + COALESCE(net.net_flow, 0), 0) * COALESCE(
-          (SELECT AVG(in_usdt_payable / NULLIF(amount_base_payable, 0))
-           FROM token_transactions recent
-           WHERE recent.token_address = tls.token_address
-             AND recent.position IN ('BUY','SELL')
-             AND recent.amount_base_payable > 0
-             AND recent.time > NOW() - INTERVAL '2 hours'),
-          638
-        ),
-        updated_at = NOW()
+        liquidity_usd  = GREATEST(liq.base_amount + COALESCE(net.net_flow, 0), 0) * 638,
+        updated_at     = NOW()
       FROM (
         SELECT token_address, amount_base_payable AS base_amount
         FROM token_transactions
@@ -53,7 +46,7 @@ export async function warmupLiquidityCache() {
 
     console.log(`[WARMUP] DEX liquidity repaired in DB`);
 
-    // ── 2. Repair DB bonding stablecoin: current = bonding_base
+    // ── 2. Repair DB bonding stablecoin: current = bonding_base ──
     await db.query(`
       UPDATE token_liquidity_state
       SET
@@ -92,7 +85,6 @@ export async function warmupLiquidityCache() {
     console.log(`[WARMUP] liquidity cache loaded: ${rows.length}`);
 
     // ── 4. Safety check cache: stablecoin bonding ─────────────
-    // Kalau DB sudah benar tapi cache masih salah karena race
     for (const [tokenAddress, cached] of liquidityCache) {
       if (
         cached.mode === 'bonding' &&

@@ -9,7 +9,7 @@ export const db = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 
-  max: 15,
+  max: 30,
   min: 2,
 
   connectionTimeoutMillis: 10_000,
