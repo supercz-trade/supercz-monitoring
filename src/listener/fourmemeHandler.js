@@ -224,6 +224,17 @@ async function _handleCreate({ tx, receipt, block, blockNumber }) {
         isDev: true
       });
 
+      // [FIX] set base_symbol di liquidity state saat token baru dibuat
+      // Tanpa ini base_symbol = null → getBasePrice() return 1 → progress salah
+      await updateLiquidityState({
+        tokenAddress,
+        platform: "bonding",
+        mode: "bonding",
+        baseAddress: launchInfo.baseAddress,
+        baseSymbol,
+        priceBase,
+      });
+
       break;
 
     } catch (err) {
