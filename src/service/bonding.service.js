@@ -1,5 +1,9 @@
 // ===============================================================
-// bonding.service.js (FINAL CLEAN - NO BUG)
+// bonding.service.js
+// FIX: atomic UPDATE — eliminasi race condition saat TX concurrent
+//      Sebelumnya: read bonding_base → hitung → write (non-atomic)
+//      Sekarang:   delta dikirim ke DB, DB sendiri yang akumulasi
+//                  dengan GREATEST(..., 0) untuk prevent negatif
 // ===============================================================
 
 import { db } from "../infra/database.js";
@@ -30,9 +34,6 @@ export async function updateBondingProgress({
   baseSymbol
 }) {
 
-  // =========================
-  // DEBUG INPUT
-  // =========================
   pushAggLog({
     stage: "BONDING_INPUT",
     tokenAddress,
@@ -58,73 +59,44 @@ export async function updateBondingProgress({
   if (!basePrice) return;
 
   // =========================
-  // CONVERT TO USD DELTA
+  // DELTA BASE (bukan USD)
+  // Simpan dalam BASE unit supaya tidak terpengaruh
+  // fluktuasi harga BNB antar TX concurrent
   // =========================
-  const amountUSD = amount * basePrice;
-
-  const deltaUSD =
+  const deltaBase =
     position === "BUY"
-      ? amountUSD
+      ? amount
       : position === "SELL"
-      ? -amountUSD
+      ? -amount
       : 0;
 
-  if (!deltaUSD) return;
+  if (!deltaBase) return;
 
   // =========================
-  // GET PREVIOUS STATE
+  // TARGET
+  // Ambil dari DB sekali — tidak perlu read bonding_base dulu
   // =========================
-  const { rows } = await db.query(`
-    SELECT bonding_base, estimated_target
+  const { rows: targetRows } = await db.query(`
+    SELECT estimated_target, target
     FROM token_liquidity_state
     WHERE token_address = $1
   `, [tokenAddress]);
 
-  const prev = rows[0] || {};
-
-  const prevBondingBase = Number(prev.bonding_base || 0);
-
-  // =========================
-  // CORE FIX (BASE FIRST 🔥)
-  // =========================
-  const deltaBase = deltaUSD / basePrice;
-
-  const bondingBase = Math.max(prevBondingBase + deltaBase, 0);
-
-  const bondingUSD = bondingBase * basePrice;
-
-  // =========================
-  // TARGET
-  // =========================
-  let target = Number(prev.estimated_target);
+  const prevRow = targetRows[0] || {};
+  let target = Number(prevRow.estimated_target || prevRow.target || 0);
 
   if (!target || target < 1000) {
     target = await getGlobalTarget();
   }
 
   // =========================
-  // PROGRESS
+  // ATOMIC UPDATE 🔥
+  // DB akumulasi bonding_base sendiri pakai GREATEST untuk
+  // prevent nilai negatif. progress & current dihitung langsung
+  // di SQL dari bonding_base hasil akumulasi — tidak ada window
+  // race antara read dan write.
   // =========================
-  const progress = target > 0 ? bondingUSD / target : 0;
-
-  // =========================
-  // DEBUG
-  // =========================
-  pushAggLog({
-    stage: "BONDING_CALC",
-    tokenAddress,
-    prevBondingBase,
-    deltaUSD,
-    bondingBase,
-    bondingUSD,
-    target,
-    progress
-  });
-
-  // =========================
-  // UPSERT (FIXED 🔥)
-  // =========================
-  await db.query(`
+  const { rows: updated } = await db.query(`
     INSERT INTO token_liquidity_state (
       token_address,
       bonding_base,
@@ -135,41 +107,69 @@ export async function updateBondingProgress({
       mode,
       updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+    VALUES (
+      $1,
+      GREATEST($2::numeric, 0),
+      GREATEST($2::numeric, 0) * $3::numeric,
+      $4::numeric,
+      CASE WHEN $4::numeric > 0
+        THEN GREATEST($2::numeric, 0) * $3::numeric / $4::numeric
+        ELSE 0
+      END,
+      'bonding',
+      'bonding',
+      NOW()
+    )
     ON CONFLICT (token_address)
     DO UPDATE SET
-      bonding_base = EXCLUDED.bonding_base,
-      current = EXCLUDED.current,
-      target = EXCLUDED.target,
-      progress = EXCLUDED.progress,
-      platform = COALESCE(EXCLUDED.platform, token_liquidity_state.platform),
-      mode = COALESCE(EXCLUDED.mode, token_liquidity_state.mode),
-      updated_at = NOW()
+      bonding_base = GREATEST(token_liquidity_state.bonding_base + $2::numeric, 0),
+      current      = GREATEST(token_liquidity_state.bonding_base + $2::numeric, 0) * $3::numeric,
+      target       = $4::numeric,
+      progress     = CASE WHEN $4::numeric > 0
+                       THEN GREATEST(token_liquidity_state.bonding_base + $2::numeric, 0) * $3::numeric / $4::numeric
+                       ELSE 0
+                     END,
+      platform     = COALESCE(token_liquidity_state.platform, 'bonding'),
+      mode         = COALESCE(token_liquidity_state.mode, 'bonding'),
+      updated_at   = NOW()
+    RETURNING bonding_base, current, target, progress
   `, [
     tokenAddress,
-    bondingBase, // BASE
-    bondingUSD,  // USD
+    deltaBase,  // delta dalam BASE (BNB/USDT/dll)
+    basePrice,  // harga base saat ini
     target,
-    progress,
-    "bonding",
-    "bonding"
   ]);
 
   // =========================
-  // CACHE UPDATE
+  // CACHE UPDATE — dari hasil RETURNING, bukan dari kalkulasi lokal
   // =========================
+  const row = updated[0];
+  if (!row) return;
+
+  const bondingBase = Number(row.bonding_base);
+  const bondingUSD  = Number(row.current);
+  const progress    = Number(row.progress);
+
+  pushAggLog({
+    stage: "BONDING_CALC",
+    tokenAddress,
+    deltaBase,
+    bondingBase,
+    bondingUSD,
+    target,
+    progress
+  });
+
   const prevCache = getLiquidityStateCache(tokenAddress) || {};
 
   const nextState = {
     ...prevCache,
-
-    current: bondingUSD,
+    current:      bondingUSD,
     target,
     progress,
-
-    bonding_usd: bondingUSD,
+    bonding_usd:  bondingUSD,
     bonding_base: bondingBase,
-    base_symbol: baseSymbol
+    base_symbol:  baseSymbol
   };
 
   pushAggLog({
