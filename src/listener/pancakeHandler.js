@@ -380,7 +380,7 @@ async function handleTokenMigratedBlock({ blockNumber }) {
 
       const chunkLogs = await getLogs({
         address: chunk,
-        topics: [TOPICS.SWAP],
+        topics: [[TOPICS.SWAP, TOPICS.SYNC]], // fetch SWAP + SYNC sekaligus
         fromBlock: blockNumber - 2,
         toBlock: blockNumber
       });
@@ -403,23 +403,38 @@ async function handleTokenMigratedBlock({ blockNumber }) {
 
     const txMap = new Map();
 
+    // Build syncMap: pairAddress → latest reserve data dari SYNC event
+    const syncMap = new Map(); // pairAddress → { reserve0, reserve1 }
     for (const logEntry of allLogs) {
+      if (logEntry.topics?.[0] !== TOPICS.SYNC) continue;
+      const pair = logEntry.address?.toLowerCase();
+      if (!pair) continue;
+      const syncData = logEntry.data.slice(2);
+      syncMap.set(pair, {
+        reserve0: BigInt("0x" + syncData.slice(0, 64)),
+        reserve1: BigInt("0x" + syncData.slice(64, 128))
+      });
+    }
+
+    // Build txMap: hanya SWAP logs
+    for (const logEntry of allLogs) {
+      if (logEntry.topics?.[0] !== TOPICS.SWAP) continue;
       if (!logEntry?.data || logEntry.data.length < 258) continue;
 
       if (!txMap.has(logEntry.transactionHash)) {
-        txMap.set(logEntry.transactionHash, []);
+        txMap.set(logEntry.transactionHash, { logs: [], syncMap });
       }
 
-      txMap.get(logEntry.transactionHash).push(logEntry);
+      txMap.get(logEntry.transactionHash).logs.push(logEntry);
     }
 
     await Promise.allSettled(
-      Array.from(txMap.entries()).map(async ([txHash, logs]) => {
+      Array.from(txMap.entries()).map(async ([txHash, { logs, syncMap }]) => {
         try {
           const tx = await getTransaction(txHash);
           if (!tx) return;
 
-          await _handleSwap({ tx, logs, block, blockNumber });
+          await _handleSwap({ tx, logs, block, blockNumber, syncMap });
 
         } catch (err) {
           log.error("[PANCAKE] TX error:", txHash, err.message);
@@ -436,7 +451,7 @@ async function handleTokenMigratedBlock({ blockNumber }) {
 // HANDLE SWAP
 // ===============================================================
 
-async function _handleSwap({ tx, logs, block, blockNumber }) {
+async function _handleSwap({ tx, logs, block, blockNumber, syncMap = new Map() }) {
 
   for (const logEntry of logs) {
 
@@ -557,38 +572,34 @@ let wallet = tx.from?.toLowerCase();
       addressMessageSender: wallet
     });
 
-    // [ADDED]
-// [ADDED] approximate liquidity update (NO RPC)
-const prevState = getLiquidityStateCache(tokenAddress) || {};
+    // [FIX] Pakai SYNC event — exact reserve tanpa extra RPC call
+    // SYNC event selalu ada bersamaan SWAP di tx yang sama
+    let baseLiquidity = 0;
+    const syncData = syncMap.get(pairAddress);
 
-let currentLiquidity = Number(prevState.base_liquidity || 0);
+    if (syncData) {
+      // Exact dari SYNC event
+      const tokenIs0ForReserve = tokenAddress === token0;
+      const baseReserveRaw = tokenIs0ForReserve ? syncData.reserve1 : syncData.reserve0;
+      baseLiquidity = Number(ethers.formatUnits(baseReserveRaw, 18));
+    } else {
+      // Fallback approximate kalau SYNC tidak ada
+      const prevState = getLiquidityStateCache(tokenAddress) || {};
+      baseLiquidity = Number(prevState.base_liquidity || 0);
+      if (position === "BUY") baseLiquidity += baseAmount;
+      else if (position === "SELL") baseLiquidity -= baseAmount;
+      if (baseLiquidity < 0) baseLiquidity = 0;
+    }
 
-// =========================
-// UPDATE FROM SWAP
-// =========================
-if (position === "BUY") {
-  currentLiquidity += baseAmount;
-} else if (position === "SELL") {
-  currentLiquidity -= baseAmount;
-}
-
-// prevent negative
-if (currentLiquidity < 0) currentLiquidity = 0;
-
-// =========================
-// SAVE STATE
-// =========================
-await updateLiquidityState({
-  tokenAddress,
-  platform: "dex",
-  mode: "dex",
-
-  baseAddress: pairInfo.baseAddress,
-  baseSymbol,
-
-  baseLiquidity: currentLiquidity, // 🔥 INI KUNCI
-  priceBase
-});
+    await updateLiquidityState({
+      tokenAddress,
+      platform: "dex",
+      mode: "dex",
+      baseAddress: pairInfo.baseAddress,
+      baseSymbol,
+      baseLiquidity,
+      priceBase
+    });
   }
 }
 
