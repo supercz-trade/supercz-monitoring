@@ -40,12 +40,21 @@ export async function insertTokenFlap({
 
 
 // ================= LOAD TOKENS =================
+// [FIX] Hanya load token yang aktif dalam 48 jam terakhir
+// Token mati tidak perlu di-track — hemat memory dan tidak
+// perlu RPC call sia-sia di scanDirect setiap block
 
 export async function loadTokenFlap() {
 
   const query = `
-    SELECT token_address
-    FROM token_flap
+    SELECT tf.token_address
+    FROM token_flap tf
+    WHERE tf.token_address IN (
+      SELECT DISTINCT token_address
+      FROM token_transactions
+      WHERE time > NOW() - INTERVAL '48 hours'
+        AND position IN ('BUY', 'SELL')
+    )
   `;
 
   try {
