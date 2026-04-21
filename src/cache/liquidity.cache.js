@@ -2,6 +2,8 @@ import { db } from "../infra/database.js";
 
 const liquidityCache = new Map();
 
+const STABLECOINS = new Set(['UUSD', 'USDT', 'USDC', 'USD1']);
+
 export function setLiquidityState(tokenAddress, state) {
   liquidityCache.set(tokenAddress, state);
 }
@@ -13,9 +15,7 @@ export function getLiquidityStateCache(tokenAddress) {
 export async function warmupLiquidityCache() {
   try {
 
-    // ── 1. Repair DB dulu sebelum load ke cache ───────────────
-    // Hitung ulang base_liquidity DEX dari TX history setiap restart
-    // supaya tidak drift akibat TX yang terjadi saat server down
+    // ── 1. Repair DB DEX: base_liquidity dari TX history ──────
     await db.query(`
       UPDATE token_liquidity_state tls
       SET
@@ -53,7 +53,21 @@ export async function warmupLiquidityCache() {
 
     console.log(`[WARMUP] DEX liquidity repaired in DB`);
 
-    // ── 2. Load semua state dari DB (sudah benar) ─────────────
+    // ── 2. Repair DB bonding stablecoin: current = bonding_base
+    await db.query(`
+      UPDATE token_liquidity_state
+      SET
+        current    = bonding_base,
+        progress   = CASE WHEN target > 0 THEN bonding_base / target ELSE 0 END,
+        updated_at = NOW()
+      WHERE mode = 'bonding'
+        AND base_symbol IN ('UUSD', 'USDT', 'USDC', 'USD1')
+        AND ABS(current - bonding_base) > 1
+    `);
+
+    console.log(`[WARMUP] stablecoin bonding repaired in DB`);
+
+    // ── 3. Load semua state dari DB ───────────────────────────
     const { rows } = await db.query(`SELECT * FROM token_liquidity_state`);
 
     for (const row of rows) {
@@ -76,6 +90,21 @@ export async function warmupLiquidityCache() {
     }
 
     console.log(`[WARMUP] liquidity cache loaded: ${rows.length}`);
+
+    // ── 4. Safety check cache: stablecoin bonding ─────────────
+    // Kalau DB sudah benar tapi cache masih salah karena race
+    for (const [tokenAddress, cached] of liquidityCache) {
+      if (
+        cached.mode === 'bonding' &&
+        STABLECOINS.has(cached.base_symbol) &&
+        Math.abs(cached.current - cached.bonding_base) > 1
+      ) {
+        cached.current     = cached.bonding_base;
+        cached.bonding_usd = cached.bonding_base;
+        cached.progress    = cached.target > 0 ? cached.bonding_base / cached.target : 0;
+        liquidityCache.set(tokenAddress, cached);
+      }
+    }
 
   } catch (err) {
     console.error("[WARMUP LIQUIDITY ERROR]", err.message);
