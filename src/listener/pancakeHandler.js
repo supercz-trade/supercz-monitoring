@@ -380,12 +380,22 @@ async function handleTokenMigratedBlock({ blockNumber }) {
     for (let i = 0; i < pairAddresses.length; i += PAIR_CHUNK_SIZE) {
       const chunk = pairAddresses.slice(i, i + PAIR_CHUNK_SIZE);
 
-      const chunkLogs = await getLogs({
-        address: chunk,
-        topics: [[TOPICS.SWAP, TOPICS.SYNC]], // fetch SWAP + SYNC sekaligus
-        fromBlock: blockNumber - 2,
-        toBlock: blockNumber
-      });
+      // Fetch SWAP dan SYNC terpisah supaya kompatibel dengan semua RPC
+      const [swapChunkLogs, syncChunkLogs] = await Promise.all([
+        getLogs({
+          address: chunk,
+          topics: [TOPICS.SWAP],
+          fromBlock: blockNumber - 2,
+          toBlock: blockNumber
+        }),
+        getLogs({
+          address: chunk,
+          topics: [TOPICS.SYNC],
+          fromBlock: blockNumber - 2,
+          toBlock: blockNumber
+        })
+      ]);
+      const chunkLogs = [...swapChunkLogs, ...syncChunkLogs];
 
       for (const logEntry of chunkLogs) {
 
