@@ -65,6 +65,7 @@ const BASE_TOKEN_WHITELIST = {
   U: "0xcE24439F2D9C6a2289F741120FE202248B666666",
   币安人生: "0x924fa68a0FC644485b8df8AbfA0A41C2e7744444",
      FORM: "0x5b73A93b4E5e4f1FD27D8b3F8C97D69908b5E284",
+  UUSD: "0x61a10e8556bed032ea176330e7f17d6a12a10000",
 };
 
 const BASE_ADDRESS_MAP = Object.fromEntries(
@@ -222,17 +223,6 @@ async function _handleCreate({ tx, receipt, block, blockNumber }) {
         addressMessageSender: devAddress,
         tagAddress: "Developer",
         isDev: true
-      });
-
-      // [FIX] set base_symbol di liquidity state saat token baru dibuat
-      // Tanpa ini base_symbol = null → getBasePrice() return 1 → progress salah
-      await updateLiquidityState({
-        tokenAddress,
-        platform: "bonding",
-        mode: "bonding",
-        baseAddress: launchInfo.baseAddress,
-        baseSymbol,
-        priceBase,
       });
 
       break;

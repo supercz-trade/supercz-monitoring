@@ -371,7 +371,6 @@ async function handleTokenMigratedBlock({ blockNumber }) {
     return;
   }
 
-  log.info(`[PANCAKE] block=${blockNumber} pairs=${pairAddresses.length}`);
 
   try {
 
@@ -386,10 +385,6 @@ async function handleTokenMigratedBlock({ blockNumber }) {
         fromBlock: blockNumber - 2,
         toBlock: blockNumber
       });
-      const trackedSyncs = syncLogsAll.filter(l => pairAddresses.includes(l.address?.toLowerCase()));
-      if (trackedSyncs.length > 0) {
-        log.info(`[PANCAKE] block=${blockNumber} global syncs=${syncLogsAll.length} tracked=${trackedSyncs.length}`);
-      }
     } catch (err) {
       log.warn(`[PANCAKE] global SYNC fetch failed: ${err.message}`);
     }
@@ -425,9 +420,6 @@ async function handleTokenMigratedBlock({ blockNumber }) {
       }
     }
 
-    const swapLogs = allLogs.filter(l => l.topics?.[0] === TOPICS.SWAP);
-    const syncLogs = allLogs.filter(l => l.topics?.[0] === TOPICS.SYNC);
-    log.info(`[PANCAKE] block=${blockNumber} totalLogs=${allLogs.length} swaps=${swapLogs.length} syncs=${syncLogs.length}`);
 
     if (!allLogs.length) return;
 
@@ -492,20 +484,14 @@ async function _handleSwap({ tx, logs, block, blockNumber, syncMap = new Map() }
     if (!pairAddress) continue;
 
     const pairInfo = pairMap.get(pairAddress);
-    if (!pairInfo) {
-      log.warn(`[PANCAKE] pair not in map: ${pairAddress}`);
-      continue;
-    }
+    if (!pairInfo) continue;
 
     // [ADDED]
     await ensurePairTokens(pairAddress, pairInfo);
 
     const { tokenAddress, baseSymbol, token0, token1 } = pairInfo;
 
-    if (!token0 || !token1) {
-      log.warn(`[PANCAKE] token0/token1 missing for pair: ${pairAddress}`);
-      continue;
-    }
+    if (!token0 || !token1) continue;
 
     let decoded;
 
@@ -559,17 +545,13 @@ async function _handleSwap({ tx, logs, block, blockNumber, syncMap = new Map() }
 
     }
 
-    if (!position) {
-      log.warn(`[PANCAKE] cannot determine position for pair=${pairAddress} tx=${tx.hash}`);
-      continue;
-    }
+    if (!position) continue;
 
     const tokenAmount = Number(ethers.formatUnits(tokenAmountRaw, 18));
     const baseAmount  = Number(ethers.formatUnits(baseAmountRaw, 18));
 
     if (!tokenAmount || !baseAmount) continue;
 
-    log.info(`[PANCAKE] ${position} token=${tokenAddress} base=${baseAmount.toFixed(6)} ${baseSymbol} tx=${tx.hash}`);
 
     let basePrice = 0;
 
@@ -626,10 +608,8 @@ let wallet = tx.from?.toLowerCase();
       const tokenIs0ForReserve = tokenAddress === token0;
       const baseReserveRaw = tokenIs0ForReserve ? syncData.reserve1 : syncData.reserve0;
       baseLiquidity = Number(ethers.formatUnits(baseReserveRaw, 18));
-      log.info(`[PANCAKE] SYNC liquidity=${baseLiquidity.toFixed(6)} ${baseSymbol} token=${tokenAddress}`);
     } else {
       // Fallback approximate kalau SYNC tidak ada
-      log.warn(`[PANCAKE] no SYNC for pair=${pairAddress}, using approximate`);
       const prevState = getLiquidityStateCache(tokenAddress) || {};
       baseLiquidity = Number(prevState.base_liquidity || 0);
       if (position === "BUY") baseLiquidity += baseAmount;
