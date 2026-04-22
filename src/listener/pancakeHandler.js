@@ -377,25 +377,35 @@ async function handleTokenMigratedBlock({ blockNumber }) {
 
     const allLogs = [];
 
+    // Fetch SYNC sekali tanpa address filter — lebih reliable
+    // Filter manual setelah fetch berdasarkan pairAddresses yang kita track
+    let syncLogsAll = [];
+    try {
+      syncLogsAll = await getLogs({
+        topics: [TOPICS.SYNC],
+        fromBlock: blockNumber - 2,
+        toBlock: blockNumber
+      });
+      const trackedSyncs = syncLogsAll.filter(l => pairAddresses.includes(l.address?.toLowerCase()));
+      if (trackedSyncs.length > 0) {
+        log.info(`[PANCAKE] block=${blockNumber} global syncs=${syncLogsAll.length} tracked=${trackedSyncs.length}`);
+      }
+    } catch (err) {
+      log.warn(`[PANCAKE] global SYNC fetch failed: ${err.message}`);
+    }
+
     for (let i = 0; i < pairAddresses.length; i += PAIR_CHUNK_SIZE) {
       const chunk = pairAddresses.slice(i, i + PAIR_CHUNK_SIZE);
 
-      // Fetch SWAP dan SYNC terpisah supaya kompatibel dengan semua RPC
-      const [swapChunkLogs, syncChunkLogs] = await Promise.all([
-        getLogs({
-          address: chunk,
-          topics: [TOPICS.SWAP],
-          fromBlock: blockNumber - 2,
-          toBlock: blockNumber
-        }),
-        getLogs({
-          address: chunk,
-          topics: [TOPICS.SYNC],
-          fromBlock: blockNumber - 2,
-          toBlock: blockNumber
-        })
-      ]);
-      const chunkLogs = [...swapChunkLogs, ...syncChunkLogs];
+      // Fetch SWAP dengan address filter
+      const swapChunkLogs = await getLogs({
+        address: chunk,
+        topics: [TOPICS.SWAP],
+        fromBlock: blockNumber - 2,
+        toBlock: blockNumber
+      });
+
+      const chunkLogs = [...swapChunkLogs];
 
       for (const logEntry of chunkLogs) {
 
@@ -406,6 +416,13 @@ async function handleTokenMigratedBlock({ blockNumber }) {
 
   allLogs.push(logEntry); // [MODIFIED]
 }
+    }
+
+    // Merge SYNC logs ke allLogs
+    for (const sl of syncLogsAll) {
+      if (pairAddresses.includes(sl.address?.toLowerCase())) {
+        allLogs.push(sl);
+      }
     }
 
     const swapLogs = allLogs.filter(l => l.topics?.[0] === TOPICS.SWAP);
