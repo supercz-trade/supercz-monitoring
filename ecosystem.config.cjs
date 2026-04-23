@@ -5,7 +5,7 @@ module.exports = {
       script:       "src/server.js",
       interpreter:  "node",
 
-      cron_restart:       "0 */6 * * *", // restart setiap 30 menit
+      cron_restart: "0 * * * *", // restart setiap 1 jam
       max_memory_restart: "2000M",         // restart jika memory > 2GB
       autorestart:        true,
       min_uptime:         "10s",
