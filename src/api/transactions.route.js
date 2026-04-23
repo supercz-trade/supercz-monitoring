@@ -69,6 +69,68 @@ export async function getTransactionsByToken(req, reply) {
 }
 
 // ===============================================================
+// GET TRANSACTIONS BY TOKEN + WALLET
+// GET /tokens/:address/transactions/:wallet
+// Sama seperti getTransactionsByToken tapi difilter per wallet,
+// limit lebih besar (500) supaya tidak terpotong seperti by-wallet global
+// ===============================================================
+
+export async function getTransactionsByTokenAndWallet(req, reply) {
+
+  try {
+
+    const { address, wallet }  = req.params;
+    const limit                = Math.min(Number(req.query.limit) || 500, 2000);
+    const positionFilter       = req.query.position?.toUpperCase();
+
+    const params = [address, wallet, limit];
+    const posSQL = positionFilter && ["BUY", "SELL"].includes(positionFilter)
+      ? `AND position = $${params.push(positionFilter)}`
+      : `AND position IN ('BUY', 'SELL')`;
+
+    const { rows } = await db.query(`
+      SELECT
+        tx_hash,
+        EXTRACT(EPOCH FROM time AT TIME ZONE 'UTC')::bigint AS time,
+        position,
+        price_usdt,
+        amount_receive         AS amount_token,
+        in_usdt_payable        AS amount_usdt,
+        amount_base_payable    AS amount_base,
+        base_payable           AS base_symbol,
+        address_message_sender AS wallet,
+        tag_address,
+        is_dev
+      FROM token_transactions
+      WHERE LOWER(token_address) = LOWER($1)
+        AND LOWER(address_message_sender) = LOWER($2)
+        ${posSQL}
+      ORDER BY time DESC
+      LIMIT $3
+    `, params);
+
+    return rows.map(tx => ({
+      txHash:      tx.tx_hash,
+      time:        tx.time,
+      position:    tx.position,
+      wallet:      tx.wallet,
+      tagAddress:  tx.tag_address || null,
+      isDev:       tx.is_dev      || false,
+      priceUsd:    Number(tx.price_usdt   || 0),
+      amountToken: Number(tx.amount_token || 0),
+      amountUsd:   Number(tx.amount_usdt  || 0),
+      amountBase:  Number(tx.amount_base  || 0),
+      baseSymbol:  tx.base_symbol || null,
+    }));
+
+  } catch (err) {
+    console.error("[TX TOKEN+WALLET API]", err.message);
+    return reply.code(500).send({ error: "failed_to_fetch_transactions" });
+  }
+
+}
+
+// ===============================================================
 // GET TRANSACTIONS BY WALLET
 // ===============================================================
 

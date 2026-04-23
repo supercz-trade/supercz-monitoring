@@ -20,6 +20,15 @@ export async function getHolders(req, reply) {
         th.last_updated,
         th.is_paperhand,
 
+        -- isDev: pernah ada transaksi dengan is_dev = true untuk token ini
+        EXISTS (
+          SELECT 1 FROM token_transactions
+          WHERE LOWER(token_address) = LOWER($1)
+            AND LOWER(address_message_sender) = LOWER(th.holder_address)
+            AND is_dev = true
+          LIMIT 1
+        ) AS is_dev,
+
         -- Hitung stats langsung dari transaksi
         COALESCE(tx.buy_count,   0)  AS buy_count,
         COALESCE(tx.sell_count,  0)  AS sell_count,
@@ -40,10 +49,15 @@ export async function getHolders(req, reply) {
           ELSE 0
         END AS avg_buy_price,
 
-        -- Realized PnL (proporsional dari token yang sudah dijual)
+        -- Realized PnL pakai FIFO:
+        -- sell hanya dihitung terhadap token yang sudah dibeli sebelumnya
+        -- sell_tokens di-cap ke buy_tokens supaya tidak minus karena token dari luar
         CASE
           WHEN COALESCE(tx.buy_tokens, 0) > 0 AND COALESCE(tx.sell_tokens, 0) > 0
-          THEN tx.sell_usd - (tx.buy_usd / tx.buy_tokens * tx.sell_tokens)
+          THEN tx.sell_usd - (
+            tx.buy_usd / tx.buy_tokens
+            * LEAST(tx.sell_tokens, tx.buy_tokens)
+          )
           ELSE 0
         END AS realized_pnl
 
@@ -90,6 +104,7 @@ export async function getHolders(req, reply) {
       firstBuyTime:  r.first_buy_time,
       lastUpdated:   r.last_updated,
       isPaperhand:   r.is_paperhand || false,
+      isDev:         r.is_dev       || false,
       buyCount:      Number(r.buy_count     || 0),
       sellCount:     Number(r.sell_count    || 0),
       buyUsd:        Number(r.buy_usd       || 0),
