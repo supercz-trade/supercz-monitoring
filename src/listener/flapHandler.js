@@ -47,7 +47,7 @@ const TOKEN_ABI = [
 
 // ================= FLAP TOKEN SET (dari DB) =================
 
-let flapTokenSet = new Set();
+export let flapTokenSet = new Set();
 
 
 export function addFlapTokenToMemory(token) {

@@ -19,6 +19,7 @@ import { startCandleRepair }                     from "./repository/candleRepair
 
 import { getCandles, getEvents, getEventsByAddress }  from "./api/candles.route.js";
 import { getHolders }             from "./api/holders.route.js";
+import { getWalletOverview } from "./api/wallet.route.js";
 import { getTopTraders } from "./api/top_traders.route.js";
 import {
   getNewTokens,
@@ -147,7 +148,9 @@ async function main() {
   fastify.get("/tokens/:address/top-traders",   getTopTraders);
 
   fastify.get("/tokens/:address/transactions",  getTransactionsByToken);
-  fastify.get("/tokens/:address/transactions/:wallet",  getTransactionsByTokenAndWallet); 
+  fastify.get("/tokens/:address/transactions/:wallet",  getTransactionsByTokenAndWallet);
+  
+  fastify.get("/wallets/:address/overview", getWalletOverview);
   fastify.get("/wallets/:address/transactions", getTransactionsByWallet);
 
   fastify.get("/tokens/:address/events",         getEvents);

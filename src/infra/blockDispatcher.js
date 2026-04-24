@@ -9,8 +9,9 @@ import { getLogs, getBlock, getQueueStats } from "./rpcQueue.js";
 import { handleFlapBlock } from "../listener/flapHandler.js";
 import { handleFourmemeBlock } from "../listener/fourmemeHandler.js";
 import { handleTokenMigratedBlock } from "../listener/pancakeHandler.js";
+import { runFlapCleanup } from "../listener/flapCleanup.job.js";
 
-const FLAP_PORTAL  = process.env.FLAP_PORTAL?.toLowerCase();
+const FLAP_PORTAL = process.env.FLAP_PORTAL?.toLowerCase();
 const FOUR_MANAGER = process.env.FOUR_MEME_MANAGER?.toLowerCase();
 
 // FIX: seenTx dipisah per platform supaya satu platform ramai
@@ -32,9 +33,9 @@ function makeSeen() {
   };
 }
 
-const markSeenFlap     = makeSeen();
+const markSeenFlap = makeSeen();
 const markSeenFourmeme = makeSeen();
-const markSeenPancake  = makeSeen();
+const markSeenPancake = makeSeen();
 
 // ================= START =================
 
@@ -48,6 +49,13 @@ export async function startBlockDispatcher() {
 
   // load pair registry untuk token yang sudah migrate ke pancake
   await handleTokenMigratedBlock.init();
+
+  setTimeout(runFlapCleanup, 65 * 60 * 1000);
+
+  // tetap jalankan sekali saat startup untuk cleanup sisa restart sebelumnya
+  runFlapCleanup();
+
+  setInterval(runFlapCleanup, 5 * 60 * 1000);
 
   // FIX: pakai onBlock() dari provider — listener otomatis dipasang
   // ulang ke provider baru saat reconnect terjadi.
@@ -73,19 +81,19 @@ async function onBlock_handler(blockNumber) {
   const platformLogs =
     fixedAddresses.length
       ? await getLogs({
-          address: fixedAddresses,
-          fromBlock: blockNumber,
-          toBlock: blockNumber
-        })
+        address: fixedAddresses,
+        fromBlock: blockNumber,
+        toBlock: blockNumber
+      })
       : [];
 
   const block = await getBlock(blockNumber);
   if (!block) return;
 
-  const flapLogs     = platformLogs.filter(l => l.address.toLowerCase() === FLAP_PORTAL);
+  const flapLogs = platformLogs.filter(l => l.address.toLowerCase() === FLAP_PORTAL);
   const fourmemeLogs = platformLogs.filter(l => l.address.toLowerCase() === FOUR_MANAGER);
 
-  const flapTxMap     = groupByTx(flapLogs,     markSeenFlap);
+  const flapTxMap = groupByTx(flapLogs, markSeenFlap);
   const fourmemeTxMap = groupByTx(fourmemeLogs, markSeenFourmeme);
 
   const tasks = [];

@@ -12,11 +12,11 @@ const DS_API = "https://api.dexscreener.com/latest/dex/pairs/bsc";
 
 // ── Pair address per symbol di BSC ────────────────────────────
 const PAIR_MAP = {
-  BNB:  "0x16b9a82891338f9bA80E2D6970FddA79D1eb0daE", // WBNB/USDT PancakeSwap v2
+  BNB: "0x16b9a82891338f9bA80E2D6970FddA79D1eb0daE", // WBNB/USDT PancakeSwap v2
   CAKE: "0x0eD7e52944161450477ee417DE9Cd3a859b14fD0", // CAKE/WBNB PancakeSwap v2
-  ASTER:"0x7E58f160B5B77b8B24Cd9900C09A3E730215aC47", // ASTER/USDT PancakeSwap v3
+  ASTER: "0x7E58f160B5B77b8B24Cd9900C09A3E730215aC47", // ASTER/USDT PancakeSwap v3
   币安人生: "0x66f289De31EEF70d52186729d2637Ac978CFC56B",
-     FORM: "0x7Cb113B487e025b3a69537fcA579559433240cb5",
+  FORM: "0x7Cb113B487e025b3a69537fcA579559433240cb5",
 };
 
 // ── Stablecoins selalu 1 ───────────────────────────────────────
@@ -24,9 +24,9 @@ const STABLECOINS = new Set(["USDT", "USDC", "USD1", "U", "USDB", "BUSD", "UUSD"
 
 // ── State ──────────────────────────────────────────────────────
 const _state = {
-  cache:     {},      // symbol → harga terkini (bisa kosong kalau belum pernah fetch)
+  cache: {},      // symbol → harga terkini (bisa kosong kalau belum pernah fetch)
   lastKnown: {},      // symbol → harga terakhir yang valid (TIDAK pernah dihapus)
-  interval:  null,
+  interval: null,
   fastTimer: null,    // interval cepat 30 detik untuk warmup awal
 };
 
@@ -67,11 +67,11 @@ async function fetchDexScreenerPrice(symbol, pairAddress) {
       }
 
       const prev = _state.cache[symbol];
-      _state.cache[symbol]     = price;
+      _state.cache[symbol] = price;
       _state.lastKnown[symbol] = price; // ← simpan sebagai lastKnown
 
       if (!prev || Math.abs(price - prev) / prev > 0.0001) {
-        const base  = pair.baseToken?.symbol  ?? "?";
+        const base = pair.baseToken?.symbol ?? "?";
         const quote = pair.quoteToken?.symbol ?? "?";
         console.log(`[PRICE] ${symbol} = $${price.toFixed(6)} (${base}/${quote})`);
       }
@@ -165,8 +165,8 @@ export function getBasePrice(baseSymbol) {
 
 export async function waitPricesReady(timeoutMs = 15000) {
   const required = Object.keys(PAIR_MAP);
-  const step     = 200;
-  let   elapsed  = 0;
+  const step = 200;
+  let elapsed = 0;
 
   console.log("[PRICE] Waiting for prices:", required.join(", "));
 

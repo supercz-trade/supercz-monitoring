@@ -159,3 +159,59 @@ export async function deleteManyTokenFlap(tokens) {
   await db.query(query, [tokens]);
 
 }
+
+
+// ================= DEAD TOKEN CLEANUP =================
+// Token yang sudah > 1 jam sejak firstBuy tapi tidak ada
+// transaksi lagi setelahnya — tidak perlu di-track
+
+export async function getDeadTokenFlap() {
+
+  const query = `
+    SELECT tf.token_address
+    FROM token_flap tf
+
+    -- ambil waktu transaksi pertama (firstBuy) token ini
+    LEFT JOIN LATERAL (
+      SELECT time
+      FROM token_transactions
+      WHERE token_address = tf.token_address
+        AND position IN ('BUY', 'SELL')
+      ORDER BY time ASC
+      LIMIT 1
+    ) first_tx ON true
+
+    WHERE
+      -- sudah lebih dari 1 jam sejak firstBuy
+      first_tx.time < NOW() - INTERVAL '1 hour'
+
+      -- tidak ada transaksi ke-2 setelah firstBuy
+      AND NOT EXISTS (
+        SELECT 1
+        FROM token_transactions tt
+        WHERE tt.token_address = tf.token_address
+          AND tt.position IN ('BUY', 'SELL')
+          AND tt.time > first_tx.time
+      )
+  `;
+
+  try {
+
+    const { rows } = await db.query(query);
+
+    const tokens = rows.map(r => r.token_address.toLowerCase());
+
+    console.log("[TOKEN_FLAP][DEAD]", tokens.length, "tokens");
+
+    return tokens;
+
+  } catch (err) {
+
+    console.error("[TOKEN_FLAP][DEAD ERROR]");
+    console.error(err);
+
+    throw err;
+
+  }
+
+}
