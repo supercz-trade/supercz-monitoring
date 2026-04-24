@@ -122,19 +122,20 @@ async function calcTokenStats(addresses) {
   }
 
   // ── devMarkMap ───────────────────────────────────────────────
-  // [ADDED]
-  const devMarkMap = {};
-  for (const r of devMarkResult.rows) {
-    const sellCount  = Number(r.sell_count  || 0);
-    const devBalance = Number(r.dev_balance || 0);
+ // ── devMarkMap ───────────────────────────────────────────────
+const DEV_DUST_THRESHOLD = 1;
 
-    let mark = "DH";
-    if (sellCount > 0 && devBalance === 0) mark = "DS";
-    else if (sellCount > 0 && devBalance > 0) mark = "DP";
-    // sellCount === 0 → DH (default)
+const devMarkMap = {};
+for (const r of devMarkResult.rows) {
+  const sellCount  = Number(r.sell_count  || 0);
+  const devBalance = Number(r.dev_balance || 0);
 
-    devMarkMap[r.token_address] = mark;
-  }
+  let mark = "DH";
+  if (sellCount > 0 && devBalance < DEV_DUST_THRESHOLD) mark = "DS";
+  else if (sellCount > 0 && devBalance >= DEV_DUST_THRESHOLD) mark = "DP";
+
+  devMarkMap[r.token_address] = mark;
+}
 
   return { statsMap, holderMap, holderCountMap, paperMap, devMarkMap };
 }

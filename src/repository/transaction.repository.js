@@ -191,6 +191,28 @@ if (data.time instanceof Date) {
   ts = Math.floor(Date.now() / 1000);
 }
 
+// [ADDED] devMark — hanya hitung kalau transaksi dari dev
+let devMark = null;
+
+const DEV_DUST_THRESHOLD = 1;
+
+if (data.isDev) {
+  if (data.position === "BUY") {
+    devMark = "DB";
+  } else if (data.position === "SELL") {
+    const { rows: balRows } = await db.query(`
+      SELECT COALESCE(balance, 0) AS balance
+      FROM token_holders
+      WHERE LOWER(token_address)  = LOWER($1)
+        AND LOWER(holder_address) = LOWER($2)
+      LIMIT 1
+    `, [data.tokenAddress, wallet]);
+
+    const devBalance = Number(balRows[0]?.balance || 0);
+    devMark = devBalance < DEV_DUST_THRESHOLD ? "DS" : "DP";
+  }
+}
+
 publish("token_update", {
   tokenAddress: data.tokenAddress,
 
@@ -201,6 +223,7 @@ publish("token_update", {
   holderCount,
 
   devSupply: stats.devSupply,
+  devMark,
   topHolderSupply: top10Sum,
   paperHandPct,
 
