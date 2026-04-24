@@ -48,6 +48,8 @@ async function calcTokenStats(addresses) {
       WHERE token_address = ANY($1)
     `, [addresses]),
 
+    // [MODIFIED] tambah EXISTS filter — exclude relay/aggregator/LP contract
+    // yang tidak punya transaksi BUY/SELL di token_transactions
     db.query(`
       SELECT token_address, holder_address, balance
       FROM (
@@ -59,8 +61,14 @@ async function calcTokenStats(addresses) {
             PARTITION BY token_address
             ORDER BY balance DESC
           ) as rn
-        FROM token_holders
+        FROM token_holders th
         WHERE token_address = ANY($1)
+          AND EXISTS (
+            SELECT 1 FROM token_transactions tt
+            WHERE LOWER(tt.token_address)          = LOWER(th.token_address)
+              AND LOWER(tt.address_message_sender) = LOWER(th.holder_address)
+              AND tt.position IN ('BUY', 'SELL')
+          )
       ) ranked
       WHERE rn <= 10
     `, [addresses]),
@@ -122,20 +130,19 @@ async function calcTokenStats(addresses) {
   }
 
   // ── devMarkMap ───────────────────────────────────────────────
- // ── devMarkMap ───────────────────────────────────────────────
-const DEV_DUST_THRESHOLD = 1;
+  const DEV_DUST_THRESHOLD = 1;
 
-const devMarkMap = {};
-for (const r of devMarkResult.rows) {
-  const sellCount  = Number(r.sell_count  || 0);
-  const devBalance = Number(r.dev_balance || 0);
+  const devMarkMap = {};
+  for (const r of devMarkResult.rows) {
+    const sellCount  = Number(r.sell_count  || 0);
+    const devBalance = Number(r.dev_balance || 0);
 
-  let mark = "DH";
-  if (sellCount > 0 && devBalance < DEV_DUST_THRESHOLD) mark = "DS";
-  else if (sellCount > 0 && devBalance >= DEV_DUST_THRESHOLD) mark = "DP";
+    let mark = "DH";
+    if (sellCount > 0 && devBalance < DEV_DUST_THRESHOLD) mark = "DS";
+    else if (sellCount > 0 && devBalance >= DEV_DUST_THRESHOLD) mark = "DP";
 
-  devMarkMap[r.token_address] = mark;
-}
+    devMarkMap[r.token_address] = mark;
+  }
 
   return { statsMap, holderMap, holderCountMap, paperMap, devMarkMap };
 }
@@ -229,7 +236,6 @@ function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, 
     migrated:     t.migrated,
     migratedTime: t.migrated_time,
 
-    // [ADDED] devMark — DH adalah default kalau tidak ada di map
     devMark: devMarkMap[t.token_address] || "DH",
 
     holderStats: {
@@ -301,16 +307,16 @@ export async function getTokenInfo(req, reply) {
     const addr = token.token_address;
     const maps = await calcTokenStats([addr]);
 
-    const stats      = maps.statsMap[addr]      || { priceUsdt: 0, marketCap: 0, volumeUsdt: 0, txCount: 0 };
-    const supply     = Number(token.supply      || 0);
+    const stats      = maps.statsMap[addr] || { priceUsdt: 0, marketCap: 0, volumeUsdt: 0, txCount: 0 };
+    const supply     = Number(token.supply || 0);
     const liq        = getLiquidityStateCache(addr);
-    const topHolders = (maps.holderMap[addr]    || []).map((h, i) => {
+    const topHolders = (maps.holderMap[addr] || []).map((h, i) => {
       const balance = Number(h.balance || 0);
       const pct     = supply > 0
         ? parseFloat(((balance / supply) * 100).toFixed(2))
         : 0;
       return {
-        rank:  i + 1,
+        rank:    i + 1,
         address: h.holder_address,
         balance,
         pct,
@@ -377,7 +383,6 @@ export async function getTokenInfo(req, reply) {
       migrated:     token.migrated,
       migratedTime: token.migrated_time,
 
-      // [ADDED]
       devMark: maps.devMarkMap[addr] || "DH",
 
       holderStats: {
