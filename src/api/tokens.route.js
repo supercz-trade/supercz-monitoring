@@ -1,13 +1,5 @@
-// ===============================================================
-// tokens.route.js
-// ===============================================================
-
 import { db } from "../infra/database.js";
 import { getLiquidityStateCache } from "../cache/liquidity.cache.js";
-
-// ===============================================================
-// SIMPLE MEMORY CACHE
-// ===============================================================
 
 const _cache = new Map();
 
@@ -24,10 +16,6 @@ function cacheGet(key) {
 function cacheSet(key, value, ttlMs = 10_000) {
   _cache.set(key, { value, expiresAt: Date.now() + ttlMs });
 }
-
-// ===============================================================
-// HELPER — hitung stats dari transaksi & holder
-// ===============================================================
 
 async function calcTokenStats(addresses) {
 
@@ -48,8 +36,6 @@ async function calcTokenStats(addresses) {
       WHERE token_address = ANY($1)
     `, [addresses]),
 
-    // [MODIFIED] tambah EXISTS filter — exclude relay/aggregator/LP contract
-    // yang tidak punya transaksi BUY/SELL di token_transactions
     db.query(`
       SELECT token_address, holder_address, balance
       FROM (
@@ -73,8 +59,6 @@ async function calcTokenStats(addresses) {
       WHERE rn <= 10
     `, [addresses]),
 
-    // dev mark per token — konsisten dengan WS
-    // DH = first buy dev, DB = buy berikutnya, DP = sell sebagian, DS = sell semua
     db.query(`
       SELECT
         tt.token_address,
@@ -95,7 +79,6 @@ async function calcTokenStats(addresses) {
 
   ]);
 
-  // ── statsMap ────────────────────────────────────────────────
   const statsMap = {};
   for (const r of statsResult.rows) {
     statsMap[r.token_address] = {
@@ -110,7 +93,6 @@ async function calcTokenStats(addresses) {
     };
   }
 
-  // ── holderMap ────────────────────────────────────────────────
   const holderMap = {};
   for (const h of holderResult.rows) {
     if (!holderMap[h.token_address]) holderMap[h.token_address] = [];
@@ -119,19 +101,16 @@ async function calcTokenStats(addresses) {
     }
   }
 
-  // ── holderCountMap ───────────────────────────────────────────
   const holderCountMap = {};
   for (const addr of addresses) {
     holderCountMap[addr] = statsMap[addr]?.holderCount || 0;
   }
 
-  // ── paperMap ─────────────────────────────────────────────────
   const paperMap = {};
   for (const addr of addresses) {
     paperMap[addr] = statsMap[addr]?.paperPct || 0;
   }
 
-  // ── devMarkMap ───────────────────────────────────────────────
   const DEV_DUST_THRESHOLD = 1;
 
   const devMarkMap = {};
@@ -141,20 +120,16 @@ async function calcTokenStats(addresses) {
     const devBalance = Number(r.dev_balance || 0);
 
     let mark = "DH";
-    if (sellCount > 0 && devBalance < DEV_DUST_THRESHOLD) mark = "DS";      // jual semua
-    else if (sellCount > 0 && buyCount > sellCount) mark = "DB";             // pernah sell tapi beli lagi
-    else if (sellCount > 0) mark = "DP";                                     // jual sebagian, belum beli lagi
-    else if (buyCount > 1) mark = "DB";                                      // belum pernah sell, buy > 1x
+    if (sellCount > 0 && devBalance < DEV_DUST_THRESHOLD) mark = "DS";
+    else if (sellCount > 0 && buyCount > sellCount)       mark = "DB";
+    else if (sellCount > 0)                               mark = "DP";
+    else if (buyCount > 1)                                mark = "DB";
 
     devMarkMap[r.token_address] = mark;
   }
 
   return { statsMap, holderMap, holderCountMap, paperMap, devMarkMap };
 }
-
-// ===============================================================
-// HELPER — build token response shape (reuse di semua endpoint)
-// ===============================================================
 
 function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, devMarkMap }) {
 
@@ -172,7 +147,7 @@ function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, 
       ? parseFloat(((balance / supply) * 100).toFixed(2))
       : 0;
     return {
-      rank: i + 1,
+      rank:    i + 1,
       address: h.holder_address,
       balance,
       pct,
@@ -185,10 +160,11 @@ function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, 
   const mode       = t.migrated ? "dex" : (liq?.mode || "bonding");
 
   return {
-    launchTime:   t.launch_time,
-    tokenAddress: t.token_address,
-    name:         t.name,
-    symbol:       t.symbol,
+    launchTime:       t.launch_time,
+    tokenAddress:     t.token_address,
+    developerAddress: t.developer_address || null,
+    name:             t.name,
+    symbol:           t.symbol,
 
     basePair:    liq?.base_symbol || t.base_pair    || null,
     baseAddress: t.base_address   || null,
@@ -251,10 +227,6 @@ function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, 
   };
 }
 
-// ===============================================================
-// NEW TOKENS
-// ===============================================================
-
 export async function getNewTokens(req, reply) {
 
   try {
@@ -289,10 +261,6 @@ export async function getNewTokens(req, reply) {
   }
 
 }
-
-// ===============================================================
-// TOKEN DETAIL
-// ===============================================================
 
 export async function getTokenInfo(req, reply) {
 
@@ -334,10 +302,11 @@ export async function getTokenInfo(req, reply) {
     const mode       = liq?.mode || (token.migrated ? "dex" : "bonding");
 
     return {
-      launchTime:   token.launch_time,
-      tokenAddress: token.token_address,
-      name:         token.name,
-      symbol:       token.symbol,
+      launchTime:       token.launch_time,
+      tokenAddress:     token.token_address,
+      developerAddress: token.developer_address || null,
+      name:             token.name,
+      symbol:           token.symbol,
 
       basePair:    liq?.base_symbol || token.base_pair || null,
       baseAddress: token.base_address || null,
@@ -404,10 +373,6 @@ export async function getTokenInfo(req, reply) {
 
 }
 
-// ===============================================================
-// TOKENS MIGRATING
-// ===============================================================
-
 export async function getTokensMigrating(req, reply) {
 
   try {
@@ -444,10 +409,6 @@ export async function getTokensMigrating(req, reply) {
   }
 
 }
-
-// ===============================================================
-// TOKENS MIGRATED
-// ===============================================================
 
 export async function getTokensMigrated(req, reply) {
 
