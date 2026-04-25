@@ -105,6 +105,7 @@ export async function updateBondingProgress({
       progress,
       platform,
       mode,
+      base_symbol,
       updated_at
     )
     VALUES (
@@ -118,6 +119,7 @@ export async function updateBondingProgress({
       END,
       'bonding',
       'bonding',
+      $5,
       NOW()
     )
     ON CONFLICT (token_address)
@@ -131,13 +133,15 @@ export async function updateBondingProgress({
                      END,
       platform     = COALESCE(token_liquidity_state.platform, 'bonding'),
       mode         = COALESCE(token_liquidity_state.mode, 'bonding'),
+      base_symbol  = COALESCE(token_liquidity_state.base_symbol, $5),
       updated_at   = NOW()
     RETURNING bonding_base, current, target, progress
   `, [
     tokenAddress,
-    deltaBase,  // delta dalam BASE (BNB/USDT/dll)
-    basePrice,  // harga base saat ini
+    deltaBase,   // delta dalam BASE (BNB/USDT/dll)
+    basePrice,   // harga base saat ini
     target,
+    baseSymbol,  // simpan ke DB supaya survive restart
   ]);
 
   // =========================

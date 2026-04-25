@@ -28,14 +28,6 @@ import { updateMigrationStats } from "../service/migrationStats.service.js";
 
 const TOTAL_SUPPLY = 1_000_000_000;
 
-const CREATE_METHODS = new Set([
-  "0x0ba6324e",
-  "0x2e2fdbd9",
-  "0x64fd8b9e",
-  "0x9f0bb8a9",
-  "0x6f8e27ec"
-]);
-
 const TOKEN_ABI = [
   "function name() view returns (string)",
   "function symbol() view returns (string)",
@@ -169,18 +161,15 @@ async function handleFlapBlock({ txMap, block, blockNumber }) {
       const tx = await getTransaction(txHash);
       if (!tx) continue;
 
-      const method = tx.data?.slice(0, 10);
-
-      // ================= CREATE TOKEN =================
-      if (CREATE_METHODS.has(method)) {
-        const receipt = await getTransactionReceipt(txHash);
-        const allLogs = receipt?.logs ?? portalLogs;
-        await _handleCreate({ tx, logs: allLogs, block, blockNumber });
-        continue;
-      }
+      // kalau ada TOKEN_CREATED di portalLogs, fetch receipt untuk dapat semua logs
+      // (termasuk TOKEN_BOUGHT yang mungkin tidak ikut di portalLogs)
+      const hasCreate = portalLogs.some(l => l.topics[0] === TOPICS.TOKEN_CREATED);
+      const allLogs = hasCreate
+        ? ((await getTransactionReceipt(txHash))?.logs ?? portalLogs)
+        : portalLogs;
 
       // ================= BUY / SELL / ADD LIQ =================
-      await _handleBuySell({ tx, logs: portalLogs, block, blockNumber, source: "portal" });
+      await _handleBuySell({ tx, logs: allLogs, block, blockNumber, source: "portal" });
 
     } catch (err) {
       console.error("[FLAP] TX error:", txHash, err.message);
@@ -263,231 +252,14 @@ async function scanDirect({ block, blockNumber }) {
 }
 
 // ===============================================================
-// CREATE TOKEN
+// HANDLE TX — PRIORITY: CREATE > MIGRATE > TRADE
 // ===============================================================
 
-async function _handleCreate({ tx, logs, block, blockNumber }) {
-
-  let tokenAddress = null;
-  let creator = null;
-  let name = null;
-  let symbol = null;
-  let meta = null;
-  let tax = 0;
-  let baseAddress = null;
-  let basePair = null;
-  let firstBuy = null;
-  const decimals = 18;
-
-  // ================= DECODE LOGS =================
-
-  for (const evLog of logs) {
-
-    const topic = evLog.topics[0];
-
-    if (topic === TOPICS.TOKEN_CREATED) {
-      const d = _decode(["uint256", "address", "uint256", "address", "string", "string", "string"], evLog.data);
-      creator = d[1].toLowerCase();
-      tokenAddress = d[3].toLowerCase();
-      name = d[4];
-      symbol = d[5];
-      meta = d[6];
-    }
-
-    if (topic === TOPICS.TOKEN_QUOTE_SET) {
-      const d = _decode(["address", "address"], evLog.data);
-      baseAddress = d[1].toLowerCase();
-      basePair = getBasePair(baseAddress);
-    }
-
-    if (topic === TOPICS.TAX_SET) {
-      const d = _decode(["address", "uint256"], evLog.data);
-      tax = Number(d[1]) / 100;
-    }
-
-    if (topic === TOPICS.TOKEN_BOUGHT) {
-      const d = _decode(["uint256", "address", "address", "uint256", "uint256", "uint256", "uint256"], evLog.data);
-      firstBuy = {
-        buyer: d[2].toLowerCase(),
-        amount: d[3],
-        eth: d[4],
-        fee: d[5]
-      };
-    }
-
-  }
-
-  if (!tokenAddress) return;
-
-  // ================= FALLBACK: baca QUOTE_TOKEN dari kontrak =================
-
-  if (!baseAddress) {
-    log.warn(`[FLAP CREATE] TOKEN_QUOTE_SET not found, reading from contract: ${tokenAddress}`);
-    try {
-      const contract = new ethers.Contract(tokenAddress, TOKEN_ABI, rpcTxProvider);
-      const fields = await getContractFields(contract, { quoteToken: () => contract.QUOTE_TOKEN() });
-      if (fields.quoteToken) {
-        baseAddress = fields.quoteToken.toLowerCase();
-        basePair = getBasePair(baseAddress);
-      }
-    } catch (err) {
-      log.warn("[FLAP CREATE] QUOTE_TOKEN fallback failed: " + err.message);
-    }
-  }
-
-  // ================= FETCH META =================
-
-  let imageUrl = null;
-  let description = null;
-  let websiteUrl = null;
-  let telegramUrl = null;
-  let twitterUrl = null;
-
-  try {
-    const metaJSON = await fetchIPFSMeta(meta);
-    description = metaJSON?.description || null;
-    websiteUrl = metaJSON?.website || null;
-    telegramUrl = metaJSON?.telegram || null;
-    twitterUrl = metaJSON?.twitter || null;
-    imageUrl = _parseImageUrl(metaJSON?.image || null);
-  } catch { }
-
-  // ================= HITUNG PRICE =================
-  // Hitung di sini agar tersedia untuk publish new_token
-
-  const basePrice = basePair ? getBasePrice(basePair) : 0;
-
-  let priceUSDT = 0;
-  let volumeUSDT = 0;
-
-  if (firstBuy && basePair) {
-    const tokenAmt = Number(ethers.formatUnits(firstBuy.amount, decimals));
-    const baseAmt = Number(ethers.formatUnits(firstBuy.eth, 18));
-    const priceBase = tokenAmt > 0 ? baseAmt / tokenAmt : 0;
-    priceUSDT = priceBase * basePrice;
-    volumeUSDT = baseAmt * basePrice;
-  }
-
-  // ================= INSERT LAUNCH =================
-
-  try {
-
-    console.log(`[FLAP REGISTRY] token registered via CREATE: ${tokenAddress}`);
-
-    await insertLaunch({
-      launchTime: new Date(block.timestamp * 1000).toISOString(),
-      tokenAddress,
-      developer: creator,
-      name, symbol,
-      description, imageUrl, websiteUrl, telegramUrl, twitterUrl,
-      supply: TOTAL_SUPPLY,
-      decimals: 18,
-      taxBuy: tax,
-      taxSell: tax,
-      minBuy: 0,
-      maxBuy: 0,
-      basePair, baseAddress,
-      networkCode: "BSC",
-      sourceFrom: "flap.sh",
-      migrated: false,
-      verifiedCode: true
-    });
-
-    await insertTokenFlap({ tokenAddress, creator, blockNumber });
-    addFlapTokenToMemory(tokenAddress);
-
-    logCreate({
-      platform: "flap",
-      tokenAddress,
-      tokenSymbol: symbol,
-      tokenName: name,
-      creator,
-      basePair,
-      baseAddress,
-      taxBuy: tax,
-      taxSell: tax,
-      txHash: tx.hash,
-      blockNumber,
-      timestamp: block.timestamp * 1000,
-      firstBuyAmount: firstBuy ? Number(ethers.formatUnits(firstBuy.amount, 18)) : undefined,
-      firstBuyUSD: firstBuy && basePair
-        ? (Number(ethers.formatUnits(firstBuy.eth, 18)) * basePrice)
-        : undefined
-    });
-
-    // ================= WS: new_token =================
-    // ✅ FIX: semua variabel diambil dari scope lokal yang sudah ada
-
-    publish("new_token", {
-      tokenAddress,
-      symbol,
-      name,
-      basePair,      // ← tambah
-      baseAddress,
-      imageUrl,
-      description,
-      website: websiteUrl,
-      telegram: telegramUrl,
-      twitter: twitterUrl,
-      devAddress: creator,
-      price: priceUSDT,
-      marketcap: priceUSDT * TOTAL_SUPPLY,
-      volume24h: volumeUSDT,
-      txCount: firstBuy ? 1 : 0,
-      holderCount: 1,
-      launchTime: block.timestamp * 1000,
-      source: "flap.sh"
-    });
-
-  } catch (err) {
-    console.error("[FLAP CREATE ERROR]", err.message);
-  }
-
-  // ================= FIRST BUY =================
-
-  if (firstBuy && basePair) {
-
-    const bp = getBasePrice(basePair);
-    const tokenAmt = Number(ethers.formatUnits(firstBuy.amount, decimals));
-    const baseAmt = Number(ethers.formatUnits(firstBuy.eth, 18));
-    const priceBase = tokenAmt > 0 ? baseAmt / tokenAmt : 0;
-    const pUSDT = priceBase * bp;
-    const vUSDT = baseAmt * bp;
-
-    await insertTransaction({
-      tokenAddress,
-      time: new Date(block.timestamp * 1000).toISOString(),
-      blockNumber,
-      txHash: tx.hash,
-      position: "BUY",
-      amountReceive: tokenAmt,
-      basePayable: basePair,
-      amountBasePayable: baseAmt,
-      inUSDTPayable: vUSDT,
-      priceBase,
-      priceUSDT: pUSDT,
-      addressMessageSender: firstBuy.buyer,
-      tagAddress: "Developer",
-      isDev: firstBuy.buyer === creator
-    });
-
-  }
-
-}
-
-// ===============================================================
-// BUY / SELL / ADD LIQUIDITY
-// ===============================================================
-
-// ===============================================================
-// BUY / SELL / ADD LIQUIDITY (ANTI-MISS VERSION)
-// ===============================================================
-
-// [MODIFIED] FULL REWRITE - ANTI MISS MIGRATION
 async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" }) {
 
-  const trades = [];              // [ADDED] support multi trade
-  const addLiquidityEvents = [];  // [ADDED] support multi migrate
+  const creates = [];
+  const addLiquidityEvents = [];
+  const trades = [];
 
   // ================= PARSE ALL LOGS =================
   for (const evLog of logs) {
@@ -496,9 +268,52 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
 
     try {
 
+      if (topic === TOPICS.TOKEN_CREATED) {
+        const d = _decode(["uint256", "address", "uint256", "address", "string", "string", "string"], evLog.data);
+        creates.push({
+          tokenAddress: d[3].toLowerCase(),
+          creator: d[1].toLowerCase(),
+          name: d[4],
+          symbol: d[5],
+          meta: d[6],
+          // akan di-enrich dari TOKEN_QUOTE_SET & TAX_SET di bawah
+          baseAddress: null,
+          basePair: null,
+          tax: 0
+        });
+      }
+
+      if (topic === TOPICS.TOKEN_QUOTE_SET) {
+        const d = _decode(["address", "address"], evLog.data);
+        const tokenAddr = d[0].toLowerCase();
+        const quoteAddr = normalizeBaseAddress(d[1]);
+        // enrich create yang matching
+        const c = creates.find(x => x.tokenAddress === tokenAddr);
+        if (c) {
+          c.baseAddress = quoteAddr;
+          c.basePair    = getBasePair(quoteAddr);
+        }
+      }
+
+      if (topic === TOPICS.TAX_SET) {
+        const d = _decode(["address", "uint256"], evLog.data);
+        const tokenAddr = d[0].toLowerCase();
+        const c = creates.find(x => x.tokenAddress === tokenAddr);
+        if (c) c.tax = Number(d[1]) / 100;
+      }
+
+      if (topic === TOPICS.LAUNCHED_TO_DEX) {
+        const d = _decode(["address", "address", "uint256", "uint256"], evLog.data);
+        addLiquidityEvents.push({
+          tokenAddress: d[0].toLowerCase(),
+          pairAddress: d[1].toLowerCase(),
+          tokenAmount: d[2],
+          baseAmount: d[3]
+        });
+      }
+
       if (topic === TOPICS.TOKEN_BOUGHT) {
         const d = _decode(["uint256", "address", "address", "uint256", "uint256", "uint256", "uint256"], evLog.data);
-
         trades.push({
           token: d[1].toLowerCase(),
           wallet: d[2].toLowerCase(),
@@ -511,7 +326,6 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
 
       if (topic === TOPICS.TOKEN_SOLD) {
         const d = _decode(["uint256", "address", "address", "uint256", "uint256", "uint256", "uint256"], evLog.data);
-
         trades.push({
           token: d[1].toLowerCase(),
           wallet: d[2].toLowerCase(),
@@ -522,34 +336,34 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
         });
       }
 
-      if (topic === TOPICS.LAUNCHED_TO_DEX) {
-        const d = _decode(["address", "address", "uint256", "uint256"], evLog.data);
-
-        addLiquidityEvents.push({
-          tokenAddress: d[0].toLowerCase(),
-          pairAddress: d[1].toLowerCase(),
-          tokenAmount: d[2],
-          baseAmount: d[3]
-        });
-      }
-
     } catch (err) {
       console.warn("[FLAP DECODE SKIP]", err.message);
       continue;
     }
   }
 
-  // ================= DEBUG =================
-  console.log("[DEBUG MIGRATE]", {
+  console.log("[FLAP PARSE]", {
     tx: tx.hash,
-    trades: trades.length,
+    creates: creates.length,
     addLiquidity: addLiquidityEvents.length,
-    logs: logs.length,
+    trades: trades.length,
     source
   });
 
   // ===============================================================
-  // 🔥 PRIORITY 1: HANDLE MIGRATION FIRST (ANTI MISS CORE)
+  // PRIORITY 1: TOKEN_CREATED
+  // ===============================================================
+
+  for (const create of creates) {
+    try {
+      await _handleCreate({ create, tx, block, blockNumber });
+    } catch (err) {
+      console.error("[FLAP CREATE ERROR]", err.message);
+    }
+  }
+
+  // ===============================================================
+  // PRIORITY 2: LAUNCHED_TO_DEX
   // ===============================================================
 
   for (const addLiquidity of addLiquidityEvents) {
@@ -665,7 +479,7 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
   }
 
   // ===============================================================
-  // 🔹 SECOND: HANDLE TRADES (AFTER MIGRATE)
+  // PRIORITY 3: TOKEN_BOUGHT / TOKEN_SOLD
   // ===============================================================
 
   for (const trade of trades) {
@@ -730,6 +544,88 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
       console.error("[FLAP TRADE ERROR]", err.message);
     }
   }
+
+}
+
+// ===============================================================
+// HANDLE CREATE (dari TOKEN_CREATED log)
+// ===============================================================
+
+async function _handleCreate({ create, tx, block, blockNumber }) {
+
+  const { tokenAddress, creator, name, symbol, meta } = create;
+
+  // cek sudah ada di DB belum
+  const existing = await getLaunchByToken(tokenAddress);
+  if (existing) return;
+
+  // fetch IPFS meta
+  let imageUrl = null, description = null, websiteUrl = null, telegramUrl = null, twitterUrl = null;
+  try {
+    const metaJSON = await fetchIPFSMeta(meta);
+    description  = metaJSON?.description || null;
+    websiteUrl   = metaJSON?.website     || null;
+    telegramUrl  = metaJSON?.telegram    || null;
+    twitterUrl   = metaJSON?.twitter     || null;
+    imageUrl     = _parseImageUrl(metaJSON?.image || null);
+  } catch { }
+
+  // ambil dari logs (sudah di-enrich di parse section)
+  let { baseAddress, basePair, tax } = create;
+
+  // fallback baca kontrak kalau TOKEN_QUOTE_SET tidak ada dalam tx
+  if (!baseAddress) {
+    try {
+      const contract = new ethers.Contract(tokenAddress, TOKEN_ABI, rpcTxProvider);
+      const fields = await getContractFields(contract, { quoteToken: () => contract.QUOTE_TOKEN() });
+      if (fields.quoteToken) {
+        baseAddress = normalizeBaseAddress(fields.quoteToken);
+        basePair    = getBasePair(baseAddress);
+      }
+    } catch (err) {
+      log.warn("[FLAP CREATE] QUOTE_TOKEN fallback failed: " + err.message);
+    }
+  }
+
+  await insertLaunch({
+    launchTime: new Date(block.timestamp * 1000).toISOString(),
+    tokenAddress,
+    developer: creator,
+    name, symbol,
+    description, imageUrl, websiteUrl, telegramUrl, twitterUrl,
+    supply: TOTAL_SUPPLY,
+    decimals: 18,
+    taxBuy: tax, taxSell: tax,
+    minBuy: 0, maxBuy: 0,
+    basePair, baseAddress,
+    networkCode: "BSC",
+    sourceFrom: "flap.sh",
+    migrated: false,
+    verifiedCode: true
+  });
+
+  await insertTokenFlap({ tokenAddress, creator, blockNumber });
+  addFlapTokenToMemory(tokenAddress);
+
+  logCreate({
+    platform: "flap",
+    tokenAddress, tokenSymbol: symbol, tokenName: name,
+    creator, basePair, baseAddress,
+    txHash: tx.hash, blockNumber,
+    timestamp: block.timestamp * 1000
+  });
+
+  publish("new_token", {
+    tokenAddress, symbol, name,
+    basePair, baseAddress,
+    imageUrl, description,
+    website: websiteUrl, telegram: telegramUrl, twitter: twitterUrl,
+    devAddress: creator,
+    price: 0, marketcap: 0, volume24h: 0,
+    txCount: 0, holderCount: 1,
+    launchTime: block.timestamp * 1000,
+    source: "flap.sh"
+  });
 
 }
 

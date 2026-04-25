@@ -14,6 +14,7 @@ export const TOPICS = {
   LAUNCHED_TO_DEX: ethers.id("LaunchedToDEX(address,address,uint256,uint256)"),
   TOKEN_QUOTE_SET: ethers.id("TokenQuoteSet(address,address)"),
   TAX_SET: ethers.id("FlapTokenTaxSet(address,uint256)"),
+  PROGRESS_CHANGED: ethers.id("FlapTokenProgressChanged(address,uint256)"),
   TRANSFER_FLAP: ethers.id("TransferFlapToken(address,address,uint256)"),
   ERC20_TRANSFER: ethers.id("Transfer(address,address,uint256)"),
   SYNC        : ethers.id("Sync(uint112,uint112)"),

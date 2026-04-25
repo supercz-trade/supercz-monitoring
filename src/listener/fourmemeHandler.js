@@ -164,8 +164,8 @@ async function _handleCreate({ tx, receipt, block, blockNumber }) {
       const basePaid = Number(ethers.formatUnits(decoded[4], 18));
       const fee      = Number(ethers.formatUnits(decoded[5], 18));
 
-      // FIX: baseAmount harus dikurangi fee — sama seperti _handleBuySell
-      baseAmount = basePaid + fee;
+      // basePaid dari event sudah termasuk fee — jangan ditambah lagi
+      baseAmount = basePaid;
 
       const baseSymbol   = launchInfo.basePair;
       const basePriceUSD = getBasePrice(baseSymbol);
@@ -277,7 +277,8 @@ async function _handleBuySell({ tx, receipt, block, blockNumber }) {
     const baseNet  = basePaid - fee;
 
     const position = topic === TOPIC_BUY ? "BUY" : "SELL";
-    const baseAmountPayable = topic === TOPIC_BUY ? basePaid + fee : baseNet;
+    // basePaid sudah termasuk fee, jadi untuk BUY pakai basePaid langsung
+    const baseAmountPayable = topic === TOPIC_BUY ? basePaid : baseNet;
 
     if (!tokenAmount || !basePaid) continue;
 

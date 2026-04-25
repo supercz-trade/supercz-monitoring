@@ -73,11 +73,13 @@ async function calcTokenStats(addresses) {
       WHERE rn <= 10
     `, [addresses]),
 
-    // [ADDED] dev mark per token
+    // dev mark per token — konsisten dengan WS
+    // DH = first buy dev, DB = buy berikutnya, DP = sell sebagian, DS = sell semua
     db.query(`
       SELECT
         tt.token_address,
         COALESCE(th.balance, 0)                               AS dev_balance,
+        COUNT(*) FILTER (WHERE tt.position = 'BUY')           AS buy_count,
         COUNT(*) FILTER (WHERE tt.position = 'SELL')          AS sell_count
       FROM token_transactions tt
       JOIN launch_tokens lt
@@ -134,12 +136,15 @@ async function calcTokenStats(addresses) {
 
   const devMarkMap = {};
   for (const r of devMarkResult.rows) {
+    const buyCount   = Number(r.buy_count   || 0);
     const sellCount  = Number(r.sell_count  || 0);
     const devBalance = Number(r.dev_balance || 0);
 
     let mark = "DH";
-    if (sellCount > 0 && devBalance < DEV_DUST_THRESHOLD) mark = "DS";
-    else if (sellCount > 0 && devBalance >= DEV_DUST_THRESHOLD) mark = "DP";
+    if (sellCount > 0 && devBalance < DEV_DUST_THRESHOLD) mark = "DS";      // jual semua
+    else if (sellCount > 0 && buyCount > sellCount) mark = "DB";             // pernah sell tapi beli lagi
+    else if (sellCount > 0) mark = "DP";                                     // jual sebagian, belum beli lagi
+    else if (buyCount > 1) mark = "DB";                                      // belum pernah sell, buy > 1x
 
     devMarkMap[r.token_address] = mark;
   }

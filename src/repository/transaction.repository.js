@@ -191,14 +191,32 @@ if (data.time instanceof Date) {
   ts = Math.floor(Date.now() / 1000);
 }
 
-// [ADDED] devMark — hanya hitung kalau transaksi dari dev
+// devMark — konsisten dengan API (tokens.route.js)
+// DH = first buy dev (saat createToken)
+// DB = buy kedua dst (tidak perduli pernah sell atau tidak)
+// DP = sell sebagian (balance masih ada)
+// DS = sell semua (balance habis)
 let devMark = null;
 
 const DEV_DUST_THRESHOLD = 1;
 
 if (data.isDev) {
   if (data.position === "BUY") {
-    devMark = "DB";
+    const { rows: txRows } = await db.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE position = 'BUY')  AS buy_count,
+        COUNT(*) FILTER (WHERE position = 'SELL') AS sell_count
+      FROM token_transactions
+      WHERE LOWER(token_address)          = LOWER($1)
+        AND LOWER(address_message_sender) = LOWER($2)
+    `, [data.tokenAddress, wallet]);
+
+    const buyCount  = Number(txRows[0]?.buy_count  || 0);
+    const sellCount = Number(txRows[0]?.sell_count || 0);
+
+    // first buy ever → DH, semua lainnya (termasuk rebuy setelah sell) → DB
+    devMark = buyCount === 0 && sellCount === 0 ? "DH" : "DB";
+
   } else if (data.position === "SELL") {
     const { rows: balRows } = await db.query(`
       SELECT COALESCE(balance, 0) AS balance
