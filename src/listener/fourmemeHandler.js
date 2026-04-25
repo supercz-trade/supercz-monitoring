@@ -17,7 +17,7 @@ import { insertTokenMigrate } from "../repository/tokenMigrate.repository.js";
 import { addPairToMemory } from "./pancakeHandler.js";
 
 import { getBasePrice } from "../price/binancePrice.js";
-import { helper } from "../infra/helper3.js";
+import { getHelper3TokenInfo } from "../infra/helper3.js";
 import { logTrade, logCreate, logAddLiquidity, log } from "../infra/logger.js";
 // [ADDED]
 import { updateLiquidityState } from "../service/liquidity.service.js";
