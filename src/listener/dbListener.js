@@ -1,14 +1,13 @@
-// [ADDED]
 import pkg from "pg";
 import { ethers } from "ethers";
-import { rpcTxProvider } from "../infra/provider.js";
+import { getContractFields } from "../infra/rpcQueue.js";
 
 const { Client } = pkg;
 
 // shared state (dipakai semua handler)
-export const flapTokenSet = new Set();
-export const pairMap = new Map();
-export const pairAddresses = [];
+export const flapTokenSet   = new Set();
+export const pairMap        = new Map();
+export const pairAddresses  = [];
 
 const PAIR_ABI = [
   "function token0() view returns(address)",
@@ -52,21 +51,23 @@ export async function startDBListener() {
 
         if (pairMap.has(pair)) return;
 
-        const contract =
-          new ethers.Contract(pair, PAIR_ABI, rpcTxProvider);
+        // Pakai getContractFields — routing EWMA + circuit breaker aktif
+        const fields = await getContractFields({
+          token0: (provider) => new ethers.Contract(pair, PAIR_ABI, provider).token0(),
+          token1: (provider) => new ethers.Contract(pair, PAIR_ABI, provider).token1(),
+        });
 
-        const token0 =
-          (await contract.token0()).toLowerCase();
-
-        const token1 =
-          (await contract.token1()).toLowerCase();
+        if (!fields.token0 || !fields.token1) {
+          console.warn("[DB LISTENER] failed to resolve pair tokens:", pair);
+          return;
+        }
 
         pairMap.set(pair, {
           tokenAddress: payload.tokenAddress.toLowerCase(),
-          baseAddress: payload.baseAddress.toLowerCase(),
-          baseSymbol: payload.baseSymbol,
-          token0,
-          token1
+          baseAddress:  payload.baseAddress.toLowerCase(),
+          baseSymbol:   payload.baseSymbol,
+          token0:       fields.token0.toLowerCase(),
+          token1:       fields.token1.toLowerCase(),
         });
 
         pairAddresses.push(pair);

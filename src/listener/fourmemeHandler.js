@@ -6,7 +6,7 @@
 import { ethers } from "ethers";
 import { TOPICS } from "../infra/topics.js";
 import { publish } from "../infra/wsbroker.js";
-import { getTransaction, getTransactionReceipt } from "../infra/rpcQueue.js";
+import { getTransaction, getTransactionReceipt, getContractFields } from "../infra/rpcQueue.js";
 import { rpcTxProvider } from "../infra/provider.js";
 
 import { processLaunch } from "../service/fourmeme.service.js";
@@ -26,7 +26,7 @@ import { updateMigrationStats } from "../service/migrationStats.service.js";
 // FIX: launchCache dengan TTL 10 menit
 // Map biasa tanpa eviction → bisa stale + memory leak kalau token banyak
 const LAUNCH_CACHE_TTL = 10 * 60 * 1000; // 10 menit
-const launchCache      = new Map(); // tokenAddress → { data, expiresAt }
+const launchCache = new Map(); // tokenAddress → { data, expiresAt }
 
 function getLaunchCache(tokenAddress) {
   const entry = launchCache.get(tokenAddress);
@@ -111,8 +111,8 @@ export async function handleFourmemeBlock({ txMap, block, blockNumber }) {
       }
 
       // [MODIFIED] ALWAYS TRY DETECT MIGRATION
-const handled = await _handleAddLiquidity({ tx, receipt, block, blockNumber });
-if (handled) continue;
+      const handled = await _handleAddLiquidity({ tx, receipt, block, blockNumber });
+      if (handled) continue;
 
       await _handleBuySell({ tx, receipt, block, blockNumber });
 
@@ -130,9 +130,9 @@ if (handled) continue;
 async function _handleCreate({ tx, receipt, block, blockNumber }) {
 
   let tokenAddress = null;
-  let tokenAmount  = 0;
-  let baseAmount   = 0;
-  let devAddress   = null;
+  let tokenAmount = 0;
+  let baseAmount = 0;
+  let devAddress = null;
 
   // ===============================
   // ambil data dari BUY event
@@ -145,12 +145,12 @@ async function _handleCreate({ tx, receipt, block, blockNumber }) {
     try {
 
       const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
-        ["address","address","uint256","uint256","uint256","uint256","uint256","uint256"],
+        ["address", "address", "uint256", "uint256", "uint256", "uint256", "uint256", "uint256"],
         evLog.data
       );
 
       tokenAddress = safeLower(decoded[0]);     // [MODIFIED] langsung dari event
-      devAddress   = safeLower(decoded[1]);     // [MODIFIED] wallet dev
+      devAddress = safeLower(decoded[1]);     // [MODIFIED] wallet dev
 
       const launchInfo = await processLaunch(tokenAddress, {
         onchainLaunchTime: new Date(block.timestamp * 1000).toISOString()
@@ -163,41 +163,41 @@ async function _handleCreate({ tx, receipt, block, blockNumber }) {
       );
 
       const basePaid = Number(ethers.formatUnits(decoded[4], 18));
-      const fee      = Number(ethers.formatUnits(decoded[5], 18));
+      const fee = Number(ethers.formatUnits(decoded[5], 18));
 
       // basePaid dari event sudah termasuk fee — jangan ditambah lagi
       baseAmount = basePaid;
 
-      const baseSymbol   = launchInfo.basePair;
+      const baseSymbol = launchInfo.basePair;
       const basePriceUSD = getBasePrice(baseSymbol);
 
-      const priceBase  = tokenAmount > 0 ? baseAmount / tokenAmount : 0;
-      const priceUSDT  = priceBase * basePriceUSD;
+      const priceBase = tokenAmount > 0 ? baseAmount / tokenAmount : 0;
+      const priceUSDT = priceBase * basePriceUSD;
       const volumeUSDT = baseAmount * basePriceUSD;
 
       publish("new_token", {
-  tokenAddress,
-  symbol: launchInfo.symbol,
-  name: launchInfo.name,
-  basePair:    launchInfo.basePair,
-  baseAddress: launchInfo.baseAddress,
-  imageUrl: launchInfo.imageUrl || null,
-  description: launchInfo.description || null,
-  website: launchInfo.websiteUrl || null,
-  telegram: launchInfo.telegramUrl || null,
-  twitter: launchInfo.twitterUrl || null,
-  devAddress,
-  price: priceUSDT,
-  marketcap: priceUSDT * TOTAL_SUPPLY,
-  volume24h: volumeUSDT,
-  txCount: 1,
-  holderCount: 1,
-  launchTime: block.timestamp * 1000,
-  txHash: tx.hash,
-  taxBuy:  launchInfo.taxBuy  ?? 0,   // ← tambah
-  taxSell: launchInfo.taxSell ?? 0,   // ← tambah
-  source: "four_meme"
-});
+        tokenAddress,
+        symbol: launchInfo.symbol,
+        name: launchInfo.name,
+        basePair: launchInfo.basePair,
+        baseAddress: launchInfo.baseAddress,
+        imageUrl: launchInfo.imageUrl || null,
+        description: launchInfo.description || null,
+        website: launchInfo.websiteUrl || null,
+        telegram: launchInfo.telegramUrl || null,
+        twitter: launchInfo.twitterUrl || null,
+        devAddress,
+        price: priceUSDT,
+        marketcap: priceUSDT * TOTAL_SUPPLY,
+        volume24h: volumeUSDT,
+        txCount: 1,
+        holderCount: 1,
+        launchTime: block.timestamp * 1000,
+        txHash: tx.hash,
+        taxBuy: launchInfo.taxBuy ?? 0,   // ← tambah
+        taxSell: launchInfo.taxSell ?? 0,   // ← tambah
+        source: "four_meme"
+      });
 
       logCreate({
         platform: "fourmeme",
@@ -261,7 +261,7 @@ async function _handleBuySell({ tx, receipt, block, blockNumber }) {
     }
 
     const tokenAddress = safeLower(decoded[0]);
-    const wallet       = safeLower(decoded[1]);
+    const wallet = safeLower(decoded[1]);
 
     // pakai TTL cache — cek expired sebelum pakai
     let launchInfo = getLaunchCache(tokenAddress);
@@ -277,8 +277,8 @@ async function _handleBuySell({ tx, receipt, block, blockNumber }) {
     );
 
     const basePaid = Number(ethers.formatUnits(decoded[4], 18));
-    const fee      = Number(ethers.formatUnits(decoded[5], 18));
-    const baseNet  = basePaid - fee;
+    const fee = Number(ethers.formatUnits(decoded[5], 18));
+    const baseNet = basePaid - fee;
 
     const position = topic === TOPIC_BUY ? "BUY" : "SELL";
     // basePaid sudah termasuk fee, jadi untuk BUY pakai basePaid langsung
@@ -287,20 +287,20 @@ async function _handleBuySell({ tx, receipt, block, blockNumber }) {
     if (!tokenAmount || !basePaid) continue;
 
     // [OPTIMIZED] gunakan data dari DB
-const baseAddress = safeLower(launchInfo.baseAddress);
+    const baseAddress = safeLower(launchInfo.baseAddress);
 
-if (!baseAddress) {
-  log.warn(`[FOURMEME] baseAddress missing for ${tokenAddress}`);
-  continue;
-}
+    if (!baseAddress) {
+      log.warn(`[FOURMEME] baseAddress missing for ${tokenAddress}`);
+      continue;
+    }
 
     if (!baseAddress) continue;
 
-    const baseSymbol   = getBaseSymbol(baseAddress);
+    const baseSymbol = getBaseSymbol(baseAddress);
     const basePriceUSD = getBasePrice(baseSymbol);
 
-    const priceBase  = tokenAmount > 0 ? baseAmountPayable / tokenAmount : 0;
-    const priceUSDT  = priceBase * basePriceUSD;
+    const priceBase = tokenAmount > 0 ? baseAmountPayable / tokenAmount : 0;
+    const priceUSDT = priceBase * basePriceUSD;
     const volumeUSDT = basePaid * basePriceUSD;
 
     const devAddress = safeLower(
@@ -390,13 +390,19 @@ async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
     pairAddress = safeLower(syncFallback.address);
 
     try {
-      const pairContract = new ethers.Contract(pairAddress, [
-        "function token0() view returns(address)",
-        "function token1() view returns(address)"
-      ], rpcTxProvider);
+      const fields = await getContractFields({
+        token0: (provider) => new ethers.Contract(pairAddress, [
+          "function token0() view returns(address)",
+          "function token1() view returns(address)"
+        ], provider).token0(),
+        token1: (provider) => new ethers.Contract(pairAddress, [
+          "function token0() view returns(address)",
+          "function token1() view returns(address)"
+        ], provider).token1(),
+      });
 
-      token0 = safeLower(await pairContract.token0());
-      token1 = safeLower(await pairContract.token1());
+      token0 = safeLower(fields.token0);
+      token1 = safeLower(fields.token1);
 
     } catch (err) {
       console.error("[MIGRATE FALLBACK ERROR]", err.message);
@@ -412,10 +418,10 @@ async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
   let baseAddress;
 
   if (BASE_ADDRESS_MAP[token0]) {
-    baseAddress  = token0;
+    baseAddress = token0;
     tokenAddress = token1;
   } else if (BASE_ADDRESS_MAP[token1]) {
-    baseAddress  = token1;
+    baseAddress = token1;
     tokenAddress = token0;
   } else {
     console.warn("[MIGRATE FAIL] Unknown base token");
@@ -428,10 +434,10 @@ async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
 
   let launchInfo = await getLaunchByToken(tokenAddress);
 
-if (!launchInfo) {
-  console.warn("[MIGRATE SKIP] token not in DB:", tokenAddress);
-  return false;
-}
+  if (!launchInfo) {
+    console.warn("[MIGRATE SKIP] token not in DB:", tokenAddress);
+    return false;
+  }
 
   const baseSymbol = launchInfo.basePair;
 
@@ -496,7 +502,7 @@ if (!launchInfo) {
     }
   }
 
-  const priceUSDT  = priceBase * basePriceUSD;
+  const priceUSDT = priceBase * basePriceUSD;
   const volumeUSDT = baseAmount * basePriceUSD;
 
   console.log(`[ANTI-MISS MIGRATE] token=${tokenAddress} pair=${pairAddress} tx=${tx.hash}`);

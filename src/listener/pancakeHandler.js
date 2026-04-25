@@ -1,16 +1,15 @@
 // ===============================================================
-// pancakeHandler.js (FINAL - PRODUCTION READY)
+// pancakeHandler.js
 // ===============================================================
 
 import { ethers } from "ethers";
-import { getLogs, getTransaction, getBlock } from "../infra/rpcQueue.js";
+import { getLogs, getTransaction, getTransactionReceipt, getContractFields, getBlock } from "../infra/rpcQueue.js";
 import { TOPICS } from "../infra/topics.js";
 
 import { loadTokenMigrateWithPair } from "../repository/tokenMigrate.repository.js";
 import { insertTransaction } from "../repository/transaction.repository.js";
 
 import { getBasePrice } from "../price/binancePrice.js";
-import { rpcTxProvider } from "../infra/provider.js";
 import { logTrade, log } from "../infra/logger.js";
 import { updateLiquidityState } from "../service/liquidity.service.js";
 import { getLiquidityStateCache } from "../cache/liquidity.cache.js";
@@ -30,29 +29,17 @@ const PAIR_CHUNK_SIZE = 5;
 // STATE (IN-MEMORY)
 // ===============================================================
 
-let pairMap = new Map();
+let pairMap       = new Map();
 let pairAddresses = [];
 
 // ===============================================================
-// RECEIPT CACHE — 1 fetch per txHash
+// RECEIPT HELPER
+// FIX: hapus _receiptCache lokal — rpcQueue.js sudah punya LRU cache
+// untuk getTransactionReceipt. Double cache hanya buang memori.
 // ===============================================================
 
-const _receiptCache = new Map();
-const RECEIPT_CACHE_MAX = 2000;
-
 async function _getReceipt(txHash) {
-  if (_receiptCache.has(txHash)) return _receiptCache.get(txHash);
-
-  const receipt = await rpcTxProvider.getTransactionReceipt(txHash);
-
-  if (receipt) {
-    _receiptCache.set(txHash, receipt);
-    if (_receiptCache.size > RECEIPT_CACHE_MAX) {
-      _receiptCache.delete(_receiptCache.keys().next().value);
-    }
-  }
-
-  return receipt;
+  return getTransactionReceipt(txHash);
 }
 
 // ===============================================================
@@ -66,7 +53,6 @@ async function _resolveWallet({ txHash, tokenAddress, pairAddress, position }) {
     const receipt = await _getReceipt(txHash);
     if (!receipt) return null;
 
-    // ambil semua Transfer event dari token ini di tx ini
     const transfers = receipt.logs.filter(l =>
       l.address.toLowerCase() === tokenAddress &&
       l.topics[0] === TOPICS.ERC20_TRANSFER &&
@@ -79,8 +65,6 @@ async function _resolveWallet({ txHash, tokenAddress, pairAddress, position }) {
 
     if (position === "SELL") {
 
-      // cari Transfer: FROM = user → TO = pair
-      // user yang kirim token ke pair = user asli
       for (const t of transfers) {
         const from = "0x" + t.topics[1].slice(26).toLowerCase();
         const to   = "0x" + t.topics[2].slice(26).toLowerCase();
@@ -89,8 +73,6 @@ async function _resolveWallet({ txHash, tokenAddress, pairAddress, position }) {
 
     } else if (position === "BUY") {
 
-      // cari Transfer: FROM = pair → TO = ?
-      // siapa yang terima token dari pair
       let recipient = null;
       for (const t of transfers) {
         const from = "0x" + t.topics[1].slice(26).toLowerCase();
@@ -103,14 +85,12 @@ async function _resolveWallet({ txHash, tokenAddress, pairAddress, position }) {
 
       if (!recipient) return null;
 
-      // follow Transfer chain sampai tidak ada lagi
-      // recipient mungkin aggregator yang forward token ke user asli
+      // follow Transfer chain sampai terminal
       const visited = new Set();
 
       while (recipient && !visited.has(recipient)) {
         visited.add(recipient);
 
-        // cari Transfer berikutnya: FROM = recipient saat ini
         const next = transfers.find(t => {
           const from = "0x" + t.topics[1].slice(26).toLowerCase();
           return from === recipient && !visited.has("0x" + t.topics[2].slice(26).toLowerCase());
@@ -137,22 +117,16 @@ async function _resolveWallet({ txHash, tokenAddress, pairAddress, position }) {
 // ADD PAIR (EVENT-DRIVEN)
 // ===============================================================
 
-export function addPairToMemory({
-  pairAddress,
-  tokenAddress,
-  baseAddress,
-  baseSymbol
-}) {
+export function addPairToMemory({ pairAddress, tokenAddress, baseAddress, baseSymbol }) {
   try {
     if (!pairAddress || !tokenAddress) return;
 
     const pair = pairAddress.toLowerCase();
-
     if (pairMap.has(pair)) return;
 
     pairMap.set(pair, {
       tokenAddress: tokenAddress.toLowerCase(),
-      baseAddress: baseAddress?.toLowerCase() || null,
+      baseAddress:  baseAddress?.toLowerCase() || null,
       baseSymbol,
       token0: null,
       token1: null
@@ -189,8 +163,8 @@ async function init() {
 
       pairMap.set(pair, {
         tokenAddress: r.tokenAddress.toLowerCase(),
-        baseAddress: r.baseAddress?.toLowerCase() || null,
-        baseSymbol: r.baseSymbol,
+        baseAddress:  r.baseAddress?.toLowerCase() || null,
+        baseSymbol:   r.baseSymbol,
         token0: null,
         token1: null
       });
@@ -202,7 +176,7 @@ async function init() {
 
   } catch (err) {
     log.error("[PANCAKE INIT ERROR]", err.message);
-    pairMap = new Map();
+    pairMap       = new Map();
     pairAddresses = [];
   }
 }
@@ -226,7 +200,7 @@ async function handleTokenMigratedBlock({ blockNumber }) {
       syncLogsAll = await getLogs({
         topics: [TOPICS.SYNC],
         fromBlock: blockNumber - 2,
-        toBlock: blockNumber
+        toBlock:   blockNumber
       });
     } catch (err) {
       log.warn(`[PANCAKE] global SYNC fetch failed: ${err.message}`);
@@ -237,9 +211,9 @@ async function handleTokenMigratedBlock({ blockNumber }) {
 
       const swapChunkLogs = await getLogs({
         address: chunk,
-        topics: [TOPICS.SWAP],
+        topics:  [TOPICS.SWAP],
         fromBlock: blockNumber - 2,
-        toBlock: blockNumber
+        toBlock:   blockNumber
       });
 
       for (const logEntry of swapChunkLogs) {
@@ -261,9 +235,9 @@ async function handleTokenMigratedBlock({ blockNumber }) {
     const block = await getBlock(blockNumber);
     if (!block) return;
 
-    const txMap = new Map();
-
+    const txMap   = new Map();
     const syncMap = new Map();
+
     for (const logEntry of allLogs) {
       if (logEntry.topics?.[0] !== TOPICS.SYNC) continue;
       const pair = logEntry.address?.toLowerCase();
@@ -307,9 +281,8 @@ async function handleTokenMigratedBlock({ blockNumber }) {
 // HANDLE SWAP
 // ===============================================================
 
-// ── dedupe global (persist antar block) ──────────────────────
 const _seenTxGlobal = new Set();
-const SEEN_MAX = 10_000;
+const SEEN_MAX      = 10_000;
 
 async function _handleSwap({ tx, logs, block, blockNumber, syncMap = new Map() }) {
 
@@ -345,37 +318,20 @@ async function _handleSwap({ tx, logs, block, blockNumber, syncMap = new Map() }
 
     const tokenIs0 = tokenAddress === token0;
 
-    let position = null;
+    let position       = null;
     let tokenAmountRaw;
     let baseAmountRaw;
 
     if (tokenIs0) {
-      if (amount0In > 0n && amount1Out > 0n) {
-        position = "SELL";
-        tokenAmountRaw = amount0In;
-        baseAmountRaw  = amount1Out;
-      }
-      if (amount1In > 0n && amount0Out > 0n) {
-        position = "BUY";
-        tokenAmountRaw = amount0Out;
-        baseAmountRaw  = amount1In;
-      }
+      if (amount0In > 0n && amount1Out > 0n) { position = "SELL"; tokenAmountRaw = amount0In;  baseAmountRaw = amount1Out; }
+      if (amount1In > 0n && amount0Out > 0n) { position = "BUY";  tokenAmountRaw = amount0Out; baseAmountRaw = amount1In;  }
     } else {
-      if (amount1In > 0n && amount0Out > 0n) {
-        position = "SELL";
-        tokenAmountRaw = amount1In;
-        baseAmountRaw  = amount0Out;
-      }
-      if (amount0In > 0n && amount1Out > 0n) {
-        position = "BUY";
-        tokenAmountRaw = amount1Out;
-        baseAmountRaw  = amount0In;
-      }
+      if (amount1In > 0n && amount0Out > 0n) { position = "SELL"; tokenAmountRaw = amount1In;  baseAmountRaw = amount0Out; }
+      if (amount0In > 0n && amount1Out > 0n) { position = "BUY";  tokenAmountRaw = amount1Out; baseAmountRaw = amount0In;  }
     }
 
     if (!position) continue;
 
-    // ── dedupe — skip kalau tx + pair sudah pernah diproses ──
     const dedupeKey = `${tx.hash}-${pairAddress}`;
     if (_seenTxGlobal.has(dedupeKey)) continue;
     _seenTxGlobal.add(dedupeKey);
@@ -384,29 +340,21 @@ async function _handleSwap({ tx, logs, block, blockNumber, syncMap = new Map() }
     }
 
     const tokenAmount = Number(ethers.formatUnits(tokenAmountRaw, 18));
-    const baseAmount  = Number(ethers.formatUnits(baseAmountRaw, 18));
+    const baseAmount  = Number(ethers.formatUnits(baseAmountRaw,  18));
 
     if (!tokenAmount || !baseAmount) continue;
 
     let basePrice = 0;
-    try {
-      basePrice = await getBasePrice(baseSymbol);
-    } catch {}
+    try { basePrice = await getBasePrice(baseSymbol); } catch {}
 
     const priceBase  = baseAmount / tokenAmount;
     const priceUSDT  = priceBase * basePrice;
     const volumeUSDT = baseAmount * basePrice;
 
-    // [MODIFIED] resolve wallet via Transfer event
     let wallet = tx.from?.toLowerCase();
 
     try {
-      const resolved = await _resolveWallet({
-        txHash: tx.hash,
-        tokenAddress,
-        pairAddress,
-        position
-      });
+      const resolved = await _resolveWallet({ txHash: tx.hash, tokenAddress, pairAddress, position });
       if (resolved) wallet = resolved;
     } catch (err) {
       log.warn("[PANCAKE] wallet resolve failed, fallback tx.from:", err.message);
@@ -434,13 +382,13 @@ async function _handleSwap({ tx, logs, block, blockNumber, syncMap = new Map() }
       blockNumber,
       txHash: tx.hash,
       position,
-      amountReceive: tokenAmount,
-      basePayable: baseSymbol,
-      amountBasePayable: baseAmount,
-      inUSDTPayable: volumeUSDT,
+      amountReceive:      tokenAmount,
+      basePayable:        baseSymbol,
+      amountBasePayable:  baseAmount,
+      inUSDTPayable:      volumeUSDT,
       priceBase,
       priceUSDT,
-      tagAddress: null,
+      tagAddress:         null,
       addressMessageSender: wallet
     });
 
@@ -449,21 +397,21 @@ async function _handleSwap({ tx, logs, block, blockNumber, syncMap = new Map() }
 
     if (syncData) {
       const tokenIs0ForReserve = tokenAddress === token0;
-      const baseReserveRaw = tokenIs0ForReserve ? syncData.reserve1 : syncData.reserve0;
+      const baseReserveRaw     = tokenIs0ForReserve ? syncData.reserve1 : syncData.reserve0;
       baseLiquidity = Number(ethers.formatUnits(baseReserveRaw, 18));
     } else {
       const prevState = getLiquidityStateCache(tokenAddress) || {};
-      baseLiquidity = Number(prevState.base_liquidity || 0);
-      if (position === "BUY") baseLiquidity += baseAmount;
-      else if (position === "SELL") baseLiquidity -= baseAmount;
-      if (baseLiquidity < 0) baseLiquidity = 0;
+      baseLiquidity   = Number(prevState.base_liquidity || 0);
+      if (position === "BUY")  baseLiquidity += baseAmount;
+      if (position === "SELL") baseLiquidity -= baseAmount;
+      if (baseLiquidity < 0)   baseLiquidity = 0;
     }
 
     await updateLiquidityState({
       tokenAddress,
-      platform: "dex",
-      mode: "dex",
-      baseAddress: pairInfo.baseAddress,
+      platform:     "dex",
+      mode:         "dex",
+      baseAddress:  pairInfo.baseAddress,
       baseSymbol,
       baseLiquidity,
       priceBase
@@ -473,15 +421,22 @@ async function _handleSwap({ tx, logs, block, blockNumber, syncMap = new Map() }
 
 // ===============================================================
 // ENSURE PAIR TOKENS
+// FIX: ganti rpcTxProvider langsung → getContractFields
+// agar EWMA routing + circuit breaker aktif
 // ===============================================================
 
 async function ensurePairTokens(pairAddress, pairInfo) {
   if (pairInfo.token0 && pairInfo.token1) return;
 
   try {
-    const contract = new ethers.Contract(pairAddress, PAIR_ABI, rpcTxProvider);
-    pairInfo.token0 = (await contract.token0()).toLowerCase();
-    pairInfo.token1 = (await contract.token1()).toLowerCase();
+    const fields = await getContractFields({
+      token0: (provider) => new ethers.Contract(pairAddress, PAIR_ABI, provider).token0(),
+      token1: (provider) => new ethers.Contract(pairAddress, PAIR_ABI, provider).token1(),
+    });
+
+    if (fields.token0) pairInfo.token0 = fields.token0.toLowerCase();
+    if (fields.token1) pairInfo.token1 = fields.token1.toLowerCase();
+
   } catch (err) {
     log.warn("[PANCAKE] ensurePairTokens error:", err.message);
   }

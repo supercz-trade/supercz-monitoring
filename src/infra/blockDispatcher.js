@@ -3,7 +3,7 @@
 // Dispatcher untuk Flap, Four.meme, dan Pancake (token migrate)
 // ===============================================================
 
-import { getWssProvider, onBlock } from "./provider.js";
+import { onBlock } from "./provider.js";
 import { getLogs, getBlock, getQueueStats } from "./rpcQueue.js";
 
 import { handleFlapBlock } from "../listener/flapHandler.js";

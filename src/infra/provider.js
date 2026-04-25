@@ -1,4 +1,16 @@
-import { WebSocketProvider, JsonRpcProvider, Network } from "ethers";
+/**
+ * provider.js
+ *
+ * Responsibilities:
+ *  - WebSocket provider lifecycle (connect, reconnect, heartbeat, watchdog)
+ *  - Export RPC URL pools for rpcQueue.js to manage
+ *
+ * NOT responsible for:
+ *  - HTTP RPC call routing or retries (handled by rpcQueue.js)
+ *  - Provider scoring or circuit breaking (handled by rpcQueue.js)
+ */
+
+import { WebSocketProvider, Network } from "ethers";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -7,92 +19,103 @@ const BSC_NETWORK = new Network("bnb", 56);
 
 // ================= CONFIG =================
 
-const RECONNECT_MIN = 3000;
-const RECONNECT_MAX = 30000;
+const RECONNECT_MIN     = 3_000;
+const RECONNECT_MAX     = 30_000;
+const HEARTBEAT_MS      = 8_000;   // BSC ~3s blocks; detect stuck faster
+const BLOCK_TIMEOUT_MS  = 30_000;  // force reconnect if no block in 30s
 
-let reconnectDelay  = RECONNECT_MIN;
-let _wssProvider    = null;
-let lastBlockTime   = Date.now();
-let _blockListeners = [];
-let _reconnectTimer = null;
-let _destroyed      = false;
+// ================= RPC URL POOLS =================
+// Exported to rpcQueue.js which handles scoring, circuit breaking, failover.
+// Split LOGS and TX pools so they don't share rate limit quota.
 
-// ================= RPC POOL =================
+const RPC_BASE_URL = process.env.BSC_RPC_URL ?? "";
 
-const RPC_BASE_URL = process.env.BSC_RPC_URL;
+const LOGS_KEYS = process.env.RPC_LOGS_API_KEYS
+  ? process.env.RPC_LOGS_API_KEYS.split(",").map(k => k.trim()).filter(Boolean)
+  : process.env.API_KEY
+    ? process.env.API_KEY.split(",").map(k => k.trim()).filter(Boolean)
+    : [];
 
-const API_KEYS = process.env.API_KEY
-  ? process.env.API_KEY.split(",").map(k => k.trim()).filter(Boolean)
-  : [];
+const TX_KEYS = process.env.RPC_TX_API_KEYS
+  ? process.env.RPC_TX_API_KEYS.split(",").map(k => k.trim()).filter(Boolean)
+  : LOGS_KEYS; // fallback: share same pool
 
-const RPC_URLS = API_KEYS.length > 0
-  ? API_KEYS.map(key => `${RPC_BASE_URL}${key}`)
+export const LOGS_RPC_URLS = LOGS_KEYS.length > 0
+  ? LOGS_KEYS.map(k => `${RPC_BASE_URL}${k}`)
   : [RPC_BASE_URL];
 
-const _rpcLogsCache = new Map();
-const _rpcTxCache   = new Map();
+export const TX_RPC_URLS = TX_KEYS.length > 0
+  ? TX_KEYS.map(k => `${RPC_BASE_URL}${k}`)
+  : [RPC_BASE_URL];
 
-function getOrCreate(url, cache) {
-  if (!cache.has(url)) {
-    cache.set(url, new JsonRpcProvider(url, BSC_NETWORK, { staticNetwork: BSC_NETWORK }));
-  }
-  return cache.get(url);
-}
-
-function randomUrl() {
-  return RPC_URLS[Math.floor(Math.random() * RPC_URLS.length)];
-}
-
-// ================= RPC PROXY =================
-
-function makeRandomProxy(cache) {
-  return new Proxy({}, {
-    get(_, prop) {
-      const provider = getOrCreate(randomUrl(), cache);
-      const val = provider[prop];
-      return typeof val === "function" ? val.bind(provider) : val;
-    }
-  });
-}
-
-export const rpcLogsProvider = makeRandomProxy(_rpcLogsCache);
-export const rpcTxProvider   = makeRandomProxy(_rpcTxCache);
+console.log(`[PROVIDER] RPC logs pool — ${LOGS_RPC_URLS.length} endpoint(s)`);
+console.log(`[PROVIDER] RPC tx pool   — ${TX_RPC_URLS.length} endpoint(s)`);
 
 // ================= WSS POOL =================
 
-const WSS_BASE_URL = process.env.BSC_WSS_BLOCK; // wss://bsc-mainnet.core.chainstack.com/
+const WSS_BASE_URL = process.env.BSC_WSS_BLOCK ?? "";
 
-const WSS_API_KEYS = process.env.WSS_API_KEY
+const WSS_KEYS = process.env.WSS_API_KEY
   ? process.env.WSS_API_KEY.split(",").map(k => k.trim()).filter(Boolean)
   : [];
 
-const WSS_URLS = WSS_API_KEYS.length > 0
-  ? WSS_API_KEYS.map(key => `${WSS_BASE_URL}${key}`)
+const WSS_URLS = WSS_KEYS.length > 0
+  ? WSS_KEYS.map(k => `${WSS_BASE_URL}${k}`)
   : [WSS_BASE_URL];
 
-function randomWssUrl() {
-  return WSS_URLS[Math.floor(Math.random() * WSS_URLS.length)];
+console.log(`[PROVIDER] WSS pool — ${WSS_URLS.length} endpoint(s)`);
+
+// Round-robin WSS selection (spread reconnects across endpoints)
+let _wssRoundRobin = 0;
+function nextWssUrl() {
+  const url = WSS_URLS[_wssRoundRobin % WSS_URLS.length];
+  _wssRoundRobin++;
+  return url;
 }
 
-console.log(`[PROVIDER] WSS pool ready — ${WSS_URLS.length} endpoint(s)`);
+// ================= WSS STATE =================
 
-// ================= WSS GETTER =================
+let _wssProvider    = null;
+let _blockListeners = [];
+let _reconnectTimer = null;
+let _destroyed      = false;
+let _reconnectDelay = RECONNECT_MIN;
+let _lastBlockTime  = Date.now();
+
+// ================= PUBLIC WSS API =================
 
 export function getWssProvider() {
   return _wssProvider;
 }
 
+/** Register a block listener — survives reconnects automatically. */
 export function onBlock(listener) {
-  _blockListeners.push(listener);
+  if (!_blockListeners.includes(listener)) {
+    _blockListeners.push(listener);
+  }
   if (_wssProvider) _wssProvider.on("block", listener);
 }
 
-// ================= CREATE WSS =================
+/** Unregister a block listener. */
+export function offBlock(listener) {
+  _blockListeners = _blockListeners.filter(l => l !== listener);
+  _wssProvider?.off("block", listener);
+}
+
+/** Gracefully shut down WSS — stops reconnect loop. */
+export function destroyWss() {
+  _destroyed = true;
+  clearTimeout(_reconnectTimer);
+  _wssProvider?.removeAllListeners();
+  _wssProvider?.websocket?.close();
+  _wssProvider = null;
+}
+
+// ================= WSS LIFECYCLE =================
 
 function createProvider() {
-
-  const url = randomWssUrl();
-  console.log("[WSS] connecting...", url.slice(0, 50) + "...");
+  const url = nextWssUrl();
+  console.log(`[WSS] connecting → ${url.slice(0, 60)}…`);
 
   const provider = new WebSocketProvider(
     url,
@@ -102,8 +125,8 @@ function createProvider() {
 
   provider.websocket?.addEventListener("open", () => {
     console.log("[WSS] connected");
-    reconnectDelay = RECONNECT_MIN;
-    lastBlockTime  = Date.now();
+    _reconnectDelay = RECONNECT_MIN;  // reset backoff on successful connect
+    _lastBlockTime  = Date.now();
   });
 
   provider.websocket?.addEventListener("close", () => {
@@ -111,31 +134,25 @@ function createProvider() {
     if (!_destroyed) scheduleReconnect();
   });
 
-  provider.websocket?.addEventListener("error", (err) => {
-    console.error("[WSS ERROR]", err?.message);
+  provider.websocket?.addEventListener("error", err => {
+    console.error("[WSS] error:", err?.message ?? err);
   });
 
-  provider.on("block", () => {
-    lastBlockTime = Date.now();
-  });
+  // Track last block time for watchdog
+  provider.on("block", () => { _lastBlockTime = Date.now(); });
 
+  // Re-attach all registered listeners
   for (const listener of _blockListeners) {
     provider.on("block", listener);
   }
 
   return provider;
-
 }
 
-// ================= RECONNECT =================
-
 function scheduleReconnect() {
+  if (_reconnectTimer || _destroyed) return;
 
-  if (_reconnectTimer) return;
-
-  // reset delay — langsung reconnect tanpa nunggu lama
-  reconnectDelay = RECONNECT_MIN;
-  console.log(`[WSS] reconnecting in ${reconnectDelay}ms`);
+  console.log(`[WSS] reconnecting in ${_reconnectDelay}ms`);
 
   _reconnectTimer = setTimeout(() => {
     _reconnectTimer = null;
@@ -143,45 +160,40 @@ function scheduleReconnect() {
     try {
       _wssProvider?.removeAllListeners();
       _wssProvider?.websocket?.close();
-    } catch {}
+    } catch { /* ignore close errors */ }
 
     _wssProvider = createProvider();
-  }, reconnectDelay);
 
+    // Exponential backoff — cap at RECONNECT_MAX
+    _reconnectDelay = Math.min(_reconnectDelay * 2, RECONNECT_MAX);
+  }, _reconnectDelay);
 }
 
-// ================= START =================
+// ================= INIT =================
 
 _wssProvider = createProvider();
 
 // ================= HEARTBEAT =================
+// Actively probe the connection; if it fails, trigger reconnect.
 
 setInterval(async () => {
-
+  if (!_wssProvider || _destroyed) return;
   try {
-    if (!_wssProvider) return;
     await _wssProvider.getBlockNumber();
   } catch (err) {
     console.warn("[WSS] heartbeat failed:", err?.message);
     scheduleReconnect();
   }
-
-}, 20000);
+}, HEARTBEAT_MS);
 
 // ================= BLOCK WATCHDOG =================
+// Detect cases where the socket stays open but stops receiving blocks.
 
 setInterval(() => {
-
-  const diff = Date.now() - lastBlockTime;
-
-  if (diff > 60000) {
-    console.warn("[WATCHDOG] block stuck, forcing reconnect");
+  if (_destroyed) return;
+  const stale = Date.now() - _lastBlockTime;
+  if (stale > BLOCK_TIMEOUT_MS) {
+    console.warn(`[WATCHDOG] no block for ${stale}ms — forcing reconnect`);
     scheduleReconnect();
   }
-
-}, 30000);
-
-// ================= INFO =================
-
-console.log(`[PROVIDER] WSS block listener ready`);
-console.log(`[PROVIDER] RPC pool ready — ${RPC_URLS.length} endpoint(s)`);
+}, BLOCK_TIMEOUT_MS / 2);
