@@ -428,29 +428,10 @@ async function _handleAddLiquidity({ tx, receipt, block, blockNumber }) {
 
   let launchInfo = await getLaunchByToken(tokenAddress);
 
-  if (!launchInfo) {
-    console.warn("[MIGRATE AUTO RECOVER]", tokenAddress);
-
-    try {
-      const result = await processLaunch(tokenAddress);
-
-      if (!result) {
-        console.warn("[MIGRATE RECOVER FAILED - processLaunch null]");
-        return false;
-      }
-
-      launchInfo = await getLaunchByToken(tokenAddress);
-
-      if (!launchInfo) {
-        console.warn("[MIGRATE RECOVER FAILED - still null]");
-        return false;
-      }
-
-    } catch (err) {
-      console.error("[MIGRATE RECOVER ERROR]", err.message);
-      return false;
-    }
-  }
+if (!launchInfo) {
+  console.warn("[MIGRATE SKIP] token not in DB:", tokenAddress);
+  return false;
+}
 
   const baseSymbol = launchInfo.basePair;
 
