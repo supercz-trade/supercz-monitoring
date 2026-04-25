@@ -42,7 +42,7 @@ export async function getWalletOverview(req, reply) {
             ), 0
           ) AS all_time_high
         FROM launch_tokens lt
-        WHERE LOWER(lt.developer) = LOWER($1)
+        WHERE LOWER(lt.developer_address) = LOWER($1)
         ORDER BY lt.launch_time DESC
       `, [address]),
 
@@ -162,15 +162,15 @@ export async function getWalletOverview(req, reply) {
 
       // ── Trading ──────────────────────────────────────────────
       trading: {
-        buyCount:       Number(trading?.buy_count       || 0),
-        sellCount:      Number(trading?.sell_count      || 0),
-        totalTxCount:   Number(trading?.total_tx_count  || 0),
-        buyVolumeUsd:   Number(trading?.buy_volume_usd  || 0),
-        sellVolumeUsd:  Number(trading?.sell_volume_usd || 0),
-        totalVolumeUsd: Number(trading?.total_volume_usd|| 0),
+        buyCount:         Number(trading?.buy_count        || 0),
+        sellCount:        Number(trading?.sell_count       || 0),
+        totalTxCount:     Number(trading?.total_tx_count   || 0),
+        buyVolumeUsd:     Number(trading?.buy_volume_usd   || 0),
+        sellVolumeUsd:    Number(trading?.sell_volume_usd  || 0),
+        totalVolumeUsd:   Number(trading?.total_volume_usd || 0),
         totalRealizedPnl: Number(pnlHoldRow?.total_realized_pnl || 0),
-        firstSeenAt:    trading?.first_seen_at || null,
-        lastSeenAt:     trading?.last_seen_at  || null
+        firstSeenAt:      trading?.first_seen_at || null,
+        lastSeenAt:       trading?.last_seen_at  || null
       },
 
       // ── Behavior ─────────────────────────────────────────────
@@ -186,6 +186,7 @@ export async function getWalletOverview(req, reply) {
 
   } catch (err) {
     console.error("[WALLET ABOUT API]", err.message);
+    console.error(err.stack);
     return reply.code(500).send({ error: "failed_to_fetch_wallet_about" });
   }
 
