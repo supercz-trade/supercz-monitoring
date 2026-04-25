@@ -109,9 +109,10 @@ export async function handleFourmemeBlock({ txMap, block, blockNumber }) {
         continue;
       }
 
-      // [MODIFIED] ALWAYS TRY DETECT MIGRATION
-      const handled = await _handleAddLiquidity({ tx, receipt, block, blockNumber });
-      if (handled) continue;
+      if (method === ADD_LIQ_SELECTOR) {
+      await _handleAddLiquidity({ tx, receipt, block, blockNumber });
+      continue;
+      }
 
       await _handleBuySell({ tx, receipt, block, blockNumber });
 

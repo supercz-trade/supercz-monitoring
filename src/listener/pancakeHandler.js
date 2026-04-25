@@ -23,8 +23,6 @@ const PAIR_ABI = [
   "function token1() view returns(address)"
 ];
 
-const PAIR_CHUNK_SIZE = 5;
-
 // ===============================================================
 // STATE (IN-MEMORY)
 // ===============================================================
@@ -34,8 +32,7 @@ let pairAddresses = [];
 
 // ===============================================================
 // RECEIPT HELPER
-// FIX: hapus _receiptCache lokal — rpcQueue.js sudah punya LRU cache
-// untuk getTransactionReceipt. Double cache hanya buang memori.
+// rpcQueue.js sudah punya LRU cache untuk getTransactionReceipt.
 // ===============================================================
 
 async function _getReceipt(txHash) {
@@ -183,63 +180,54 @@ async function init() {
 
 // ===============================================================
 // BLOCK HANDLER
+// FIX: gabung semua getLogs jadi 2 call saja (SWAP + SYNC)
+//      bukan loop per chunk — drastis kurangi queue pressure.
+// FIX: hapus fromBlock - 2, cukup block saat ini saja
+//      supaya tidak ada double-processing antar block.
 // ===============================================================
 
 async function handleTokenMigratedBlock({ blockNumber }) {
-
-  const seenLogs = new Set();
 
   if (!pairAddresses.length) return;
 
   try {
 
-    const allLogs = [];
-
-    let syncLogsAll = [];
+    // 1 call untuk semua SWAP dari semua pair sekaligus
+    let swapLogs = [];
     try {
-      syncLogsAll = await getLogs({
-        topics: [TOPICS.SYNC],
-        fromBlock: blockNumber - 2,
+      swapLogs = await getLogs({
+        address:   pairAddresses,
+        topics:    [TOPICS.SWAP],
+        fromBlock: blockNumber,
         toBlock:   blockNumber
       });
     } catch (err) {
-      log.warn(`[PANCAKE] global SYNC fetch failed: ${err.message}`);
+      log.warn(`[PANCAKE] SWAP fetch failed: ${err.message}`);
+      return;
     }
 
-    for (let i = 0; i < pairAddresses.length; i += PAIR_CHUNK_SIZE) {
-      const chunk = pairAddresses.slice(i, i + PAIR_CHUNK_SIZE);
+    if (!swapLogs.length) return;
 
-      const swapChunkLogs = await getLogs({
-        address: chunk,
-        topics:  [TOPICS.SWAP],
-        fromBlock: blockNumber - 2,
+    // 1 call untuk semua SYNC dari semua pair sekaligus
+    let syncLogs = [];
+    try {
+      syncLogs = await getLogs({
+        address:   pairAddresses,
+        topics:    [TOPICS.SYNC],
+        fromBlock: blockNumber,
         toBlock:   blockNumber
       });
-
-      for (const logEntry of swapChunkLogs) {
-        const id = logEntry.transactionHash + "-" + logEntry.logIndex;
-        if (seenLogs.has(id)) continue;
-        seenLogs.add(id);
-        allLogs.push(logEntry);
-      }
+    } catch (err) {
+      log.warn(`[PANCAKE] SYNC fetch failed: ${err.message}`);
+      // sync gagal tidak fatal, lanjut tanpa syncMap
     }
-
-    for (const sl of syncLogsAll) {
-      if (pairAddresses.includes(sl.address?.toLowerCase())) {
-        allLogs.push(sl);
-      }
-    }
-
-    if (!allLogs.length) return;
 
     const block = await getBlock(blockNumber);
     if (!block) return;
 
-    const txMap   = new Map();
+    // Build syncMap dari SYNC logs
     const syncMap = new Map();
-
-    for (const logEntry of allLogs) {
-      if (logEntry.topics?.[0] !== TOPICS.SYNC) continue;
+    for (const logEntry of syncLogs) {
       const pair = logEntry.address?.toLowerCase();
       if (!pair) continue;
       const syncData = logEntry.data.slice(2);
@@ -249,16 +237,24 @@ async function handleTokenMigratedBlock({ blockNumber }) {
       });
     }
 
-    for (const logEntry of allLogs) {
-      if (logEntry.topics?.[0] !== TOPICS.SWAP) continue;
+    // Group SWAP logs per txHash, dedupe per logIndex
+    const seenLogs = new Set();
+    const txMap    = new Map();
+
+    for (const logEntry of swapLogs) {
       if (!logEntry?.data || logEntry.data.length < 258) continue;
+
+      const id = logEntry.transactionHash + "-" + logEntry.logIndex;
+      if (seenLogs.has(id)) continue;
+      seenLogs.add(id);
 
       if (!txMap.has(logEntry.transactionHash)) {
         txMap.set(logEntry.transactionHash, { logs: [], syncMap });
       }
-
       txMap.get(logEntry.transactionHash).logs.push(logEntry);
     }
+
+    if (!txMap.size) return;
 
     await Promise.allSettled(
       Array.from(txMap.entries()).map(async ([txHash, { logs, syncMap }]) => {
@@ -382,13 +378,13 @@ async function _handleSwap({ tx, logs, block, blockNumber, syncMap = new Map() }
       blockNumber,
       txHash: tx.hash,
       position,
-      amountReceive:      tokenAmount,
-      basePayable:        baseSymbol,
-      amountBasePayable:  baseAmount,
-      inUSDTPayable:      volumeUSDT,
+      amountReceive:        tokenAmount,
+      basePayable:          baseSymbol,
+      amountBasePayable:    baseAmount,
+      inUSDTPayable:        volumeUSDT,
       priceBase,
       priceUSDT,
-      tagAddress:         null,
+      tagAddress:           null,
       addressMessageSender: wallet
     });
 
@@ -421,8 +417,6 @@ async function _handleSwap({ tx, logs, block, blockNumber, syncMap = new Map() }
 
 // ===============================================================
 // ENSURE PAIR TOKENS
-// FIX: ganti rpcTxProvider langsung → getContractFields
-// agar EWMA routing + circuit breaker aktif
 // ===============================================================
 
 async function ensurePairTokens(pairAddress, pairInfo) {
