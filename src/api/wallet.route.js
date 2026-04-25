@@ -1,6 +1,6 @@
 // ===============================================================
 // wallet.route.js
-// GET /wallets/:address/about
+// GET /wallets/:address/overview
 // ===============================================================
 
 import { db } from "../infra/database.js";
@@ -19,135 +19,101 @@ export async function getWalletOverview(req, reply) {
       return reply.code(400).send({ error: "invalid_address" });
     }
 
-    const [
-      deployResult,
-      tradingResult,
-      uniqueTokensResult,
-      winRateResult,
-      avgHoldResult
-    ] = await Promise.all([
+    const addr = address.toLowerCase();
 
-      // ── Deploy stats ─────────────────────────────────────────
+    const [deployResult, tradingResult] = await Promise.all([
+
+      // ── Deploy stats — JOIN bukan correlated subquery ─────────
       db.query(`
         SELECT
           lt.token_address,
           lt.symbol,
           lt.image_url,
-          COALESCE(
-            (
-              SELECT MAX(price_usdt)
-              FROM token_transactions
-              WHERE LOWER(token_address) = LOWER(lt.token_address)
-                AND position IN ('BUY', 'SELL')
-            ), 0
-          ) AS all_time_high
+          COALESCE(ath.max_price, 0) AS all_time_high
         FROM launch_tokens lt
-        WHERE LOWER(lt.developer_address) = LOWER($1)
-        ORDER BY lt.launch_time DESC
-      `, [address]),
-
-      // ── Trading stats ────────────────────────────────────────
-      db.query(`
-        SELECT
-          COUNT(*) FILTER (WHERE position = 'BUY')  AS buy_count,
-          COUNT(*) FILTER (WHERE position = 'SELL') AS sell_count,
-          COUNT(*)                                   AS total_tx_count,
-
-          COALESCE(SUM(in_usdt_payable) FILTER (WHERE position = 'BUY'),  0) AS buy_volume_usd,
-          COALESCE(SUM(in_usdt_payable) FILTER (WHERE position = 'SELL'), 0) AS sell_volume_usd,
-          COALESCE(SUM(in_usdt_payable), 0)                                  AS total_volume_usd,
-
-          MIN(time) AS first_seen_at,
-          MAX(time) AS last_seen_at
-        FROM token_transactions
-        WHERE LOWER(address_message_sender) = LOWER($1)
-          AND position IN ('BUY', 'SELL')
-      `, [address]),
-
-      // ── Unique tokens traded ─────────────────────────────────
-      db.query(`
-        SELECT COUNT(DISTINCT token_address) AS unique_tokens
-        FROM token_transactions
-        WHERE LOWER(address_message_sender) = LOWER($1)
-          AND position IN ('BUY', 'SELL')
-      `, [address]),
-
-      // ── Win rate — per token, hitung realized pnl ────────────
-      db.query(`
-        SELECT
-          COUNT(*) FILTER (WHERE realized_pnl > 0) AS win_count,
-          COUNT(*)                                  AS total_count
-        FROM (
-          SELECT
-            token_address,
-            SUM(in_usdt_payable) FILTER (WHERE position = 'SELL')
-            - (
-                SUM(in_usdt_payable)  FILTER (WHERE position = 'BUY')
-              / NULLIF(SUM(amount_receive) FILTER (WHERE position = 'BUY'), 0)
-              * LEAST(
-                  SUM(amount_receive) FILTER (WHERE position = 'SELL'),
-                  SUM(amount_receive) FILTER (WHERE position = 'BUY')
-                )
-              ) AS realized_pnl
+        LEFT JOIN (
+          SELECT token_address, MAX(price_usdt) AS max_price
           FROM token_transactions
-          WHERE LOWER(address_message_sender) = LOWER($1)
-            AND position IN ('BUY', 'SELL')
+          WHERE position IN ('BUY', 'SELL')
           GROUP BY token_address
-          HAVING SUM(amount_receive) FILTER (WHERE position = 'BUY') > 0
-             AND SUM(amount_receive) FILTER (WHERE position = 'SELL') > 0
-        ) per_token
-      `, [address]),
+        ) ath ON ath.token_address = lt.token_address
+        WHERE lt.developer_address = $1
+        ORDER BY lt.launch_time DESC
+      `, [addr]),
 
-      // ── Total realized pnl + avg hold time ───────────────────
+      // ── Semua trading stats dalam 1 query pakai CTE ───────────
       db.query(`
-        SELECT
-          SUM(realized_pnl) AS total_realized_pnl,
-          AVG(hold_time_seconds) FILTER (WHERE hold_time_seconds > 0) AS avg_hold_time_seconds
-        FROM (
+        WITH base AS (
           SELECT
             token_address,
-
-            -- realized pnl per token
+            position,
+            in_usdt_payable,
+            amount_receive,
+            time
+          FROM token_transactions
+          WHERE address_message_sender = $1
+            AND position IN ('BUY', 'SELL')
+        ),
+        summary AS (
+          SELECT
+            COUNT(*) FILTER (WHERE position = 'BUY')  AS buy_count,
+            COUNT(*) FILTER (WHERE position = 'SELL') AS sell_count,
+            COUNT(*)                                   AS total_tx_count,
+            COALESCE(SUM(in_usdt_payable) FILTER (WHERE position = 'BUY'),  0) AS buy_volume_usd,
+            COALESCE(SUM(in_usdt_payable) FILTER (WHERE position = 'SELL'), 0) AS sell_volume_usd,
+            COALESCE(SUM(in_usdt_payable), 0)                                  AS total_volume_usd,
+            COUNT(DISTINCT token_address)              AS unique_tokens,
+            MIN(time)                                  AS first_seen_at,
+            MAX(time)                                  AS last_seen_at
+          FROM base
+        ),
+        per_token AS (
+          SELECT
+            token_address,
             SUM(in_usdt_payable) FILTER (WHERE position = 'SELL')
             - (
-                SUM(in_usdt_payable)  FILTER (WHERE position = 'BUY')
-              / NULLIF(SUM(amount_receive) FILTER (WHERE position = 'BUY'), 0)
-              * LEAST(
-                  SUM(amount_receive) FILTER (WHERE position = 'SELL'),
-                  SUM(amount_receive) FILTER (WHERE position = 'BUY')
-                )
+                SUM(in_usdt_payable) FILTER (WHERE position = 'BUY')
+                / NULLIF(SUM(amount_receive) FILTER (WHERE position = 'BUY'), 0)
+                * LEAST(
+                    SUM(amount_receive) FILTER (WHERE position = 'SELL'),
+                    SUM(amount_receive) FILTER (WHERE position = 'BUY')
+                  )
               ) AS realized_pnl,
-
-            -- hold time: jarak firstBuy → lastSell dalam detik
             EXTRACT(EPOCH FROM (
               MAX(time) FILTER (WHERE position = 'SELL')
               - MIN(time) FILTER (WHERE position = 'BUY')
-            )) AS hold_time_seconds
-
-          FROM token_transactions
-          WHERE LOWER(address_message_sender) = LOWER($1)
-            AND position IN ('BUY', 'SELL')
+            )) AS hold_time_seconds,
+            SUM(amount_receive) FILTER (WHERE position = 'BUY')  AS total_bought,
+            SUM(amount_receive) FILTER (WHERE position = 'SELL') AS total_sold
+          FROM base
           GROUP BY token_address
-        ) per_token
-      `, [address]),
+        ),
+        pnl_agg AS (
+          SELECT
+            SUM(realized_pnl)                                                                AS total_realized_pnl,
+            AVG(hold_time_seconds) FILTER (WHERE hold_time_seconds > 0)                     AS avg_hold_time_seconds,
+            COUNT(*) FILTER (WHERE realized_pnl > 0 AND total_bought > 0 AND total_sold > 0) AS win_count,
+            COUNT(*) FILTER (WHERE total_bought > 0 AND total_sold > 0)                      AS total_count
+          FROM per_token
+        )
+        SELECT s.*, p.total_realized_pnl, p.avg_hold_time_seconds, p.win_count, p.total_count
+        FROM summary s, pnl_agg p
+      `, [addr]),
 
     ]);
 
     // ── Parse ─────────────────────────────────────────────────
 
-    const trading     = tradingResult.rows[0];
-    const winRow      = winRateResult.rows[0];
-    const pnlHoldRow  = avgHoldResult.rows[0];
-
-    const winCount    = Number(winRow?.win_count   || 0);
-    const totalCount  = Number(winRow?.total_count || 0);
-    const winRate     = totalCount > 0
+    const t          = tradingResult.rows[0];
+    const winCount   = Number(t?.win_count   || 0);
+    const totalCount = Number(t?.total_count || 0);
+    const winRate    = totalCount > 0
       ? Number(((winCount / totalCount) * 100).toFixed(2))
       : 0;
 
     return {
 
-      wallet: address.toLowerCase(),
+      wallet: addr,
 
       // ── Deploy ───────────────────────────────────────────────
       deploy: {
@@ -155,31 +121,31 @@ export async function getWalletOverview(req, reply) {
         deployData:  deployResult.rows.map(r => ({
           address:     r.token_address,
           symbol:      r.symbol,
-          imageUrl:    r.image_url   || null,
+          imageUrl:    r.image_url || null,
           allTimeHigh: Number(r.all_time_high || 0)
         }))
       },
 
       // ── Trading ──────────────────────────────────────────────
       trading: {
-        buyCount:         Number(trading?.buy_count        || 0),
-        sellCount:        Number(trading?.sell_count       || 0),
-        totalTxCount:     Number(trading?.total_tx_count   || 0),
-        buyVolumeUsd:     Number(trading?.buy_volume_usd   || 0),
-        sellVolumeUsd:    Number(trading?.sell_volume_usd  || 0),
-        totalVolumeUsd:   Number(trading?.total_volume_usd || 0),
-        totalRealizedPnl: Number(pnlHoldRow?.total_realized_pnl || 0),
-        firstSeenAt:      trading?.first_seen_at || null,
-        lastSeenAt:       trading?.last_seen_at  || null
+        buyCount:         Number(t?.buy_count        || 0),
+        sellCount:        Number(t?.sell_count       || 0),
+        totalTxCount:     Number(t?.total_tx_count   || 0),
+        buyVolumeUsd:     Number(t?.buy_volume_usd   || 0),
+        sellVolumeUsd:    Number(t?.sell_volume_usd  || 0),
+        totalVolumeUsd:   Number(t?.total_volume_usd || 0),
+        totalRealizedPnl: Number(t?.total_realized_pnl || 0),
+        firstSeenAt:      t?.first_seen_at || null,
+        lastSeenAt:       t?.last_seen_at  || null
       },
 
       // ── Behavior ─────────────────────────────────────────────
       behavior: {
-        uniqueTokensTraded: Number(uniqueTokensResult.rows[0]?.unique_tokens || 0),
+        uniqueTokensTraded: Number(t?.unique_tokens || 0),
         winRate,
         winCount,
         totalCount,
-        avgHoldTimeSeconds: Number(pnlHoldRow?.avg_hold_time_seconds || 0)
+        avgHoldTimeSeconds: Number(t?.avg_hold_time_seconds || 0)
       }
 
     };
