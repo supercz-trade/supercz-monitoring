@@ -7,7 +7,6 @@ import { ethers } from "ethers";
 import { TOPICS } from "../infra/topics.js";
 import { publish } from "../infra/wsbroker.js";
 import { getTransaction, getTransactionReceipt, getContractFields } from "../infra/rpcQueue.js";
-import { rpcTxProvider } from "../infra/provider.js";
 
 import { processLaunch } from "../service/fourmeme.service.js";
 import { getLaunchByToken, setTokenMigrated } from "../repository/launch.repository.js";
