@@ -7,7 +7,7 @@
 //   - Frontend tinggal fetch endpoint ini, tidak perlu ethers.js
 // ===============================================================
 
-import { rpcTxProvider } from "../infra/provider.js";
+import { getFeeData } from "../infra/rpcQueue.js";
 
 // ── Cache 15 detik ─────────────────────────────────────────────
 let _cache = null;
@@ -19,7 +19,7 @@ async function fetchGasPrice() {
   if (_cache && now - _cacheAt < CACHE_TTL_MS) return _cache;
 
   try {
-    const feeData = await rpcTxProvider.getFeeData();
+    const feeData = await getFeeData();
 
     // gasPrice dalam wei → convert ke Gwei
     const gasPriceWei  = feeData.gasPrice ?? feeData.maxFeePerGas ?? 0n;

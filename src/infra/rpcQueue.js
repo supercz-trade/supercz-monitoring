@@ -403,6 +403,26 @@ export function getQueueStats() {
   };
 }
 
+export function getFeeData() {
+  return enqueue(async () => {
+    const entry = pickBest(TX_POOL);
+    if (!entry) throw new Error("all_providers_unavailable");
+    const t0 = Date.now();
+    try {
+      const data = await withTimeout(
+        entry.provider.getFeeData(),
+        TIMEOUT.contract,
+        "getFeeData timeout"
+      );
+      recordSuccess(entry, Date.now() - t0);
+      return data;
+    } catch (err) {
+      recordFailure(entry, false);
+      throw err;
+    }
+  });
+}
+
 // ================= PERIODIC CLEANUP =================
 
 setInterval(() => {
