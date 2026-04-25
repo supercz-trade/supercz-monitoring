@@ -1,12 +1,4 @@
-// ===============================================================
-// candles.route.js
-// ===============================================================
-
 import { db } from "../infra/database.js";
-
-// ===============================================================
-// CONFIG
-// ===============================================================
 
 const ALLOWED_TIMEFRAMES = new Set([
   "1s", "15s", "30s",
@@ -14,13 +6,11 @@ const ALLOWED_TIMEFRAMES = new Set([
   "1h", "4h", "1d"
 ]);
 
-// ===============================================================
-// UTILS
-// ===============================================================
-
 function isValidAddress(address) {
   return typeof address === "string" && /^0x[a-fA-F0-9]{40}$/.test(address);
 }
+
+const TOTAL_SUPPLY = 1_000_000_000;
 
 // ===============================================================
 // GET CANDLES
@@ -31,8 +21,8 @@ export async function getCandles(req, reply) {
   try {
 
     const { address } = req.params;
-    const timeframe = req.query.tf || "1m";
-    const limit = Math.min(Number(req.query.limit) || 1000, 1000);
+    const timeframe   = req.query.tf || "1m";
+    const limit       = Math.min(Number(req.query.limit) || 1000, 1000);
 
     if (!isValidAddress(address)) {
       return reply.code(400).send({ error: "invalid_address" });
@@ -45,10 +35,7 @@ export async function getCandles(req, reply) {
     const { rows } = await db.query(`
       SELECT
         EXTRACT(EPOCH FROM start_time AT TIME ZONE 'UTC')::bigint AS time_epoch,
-        open,
-        high,
-        low,
-        close,
+        open, high, low, close,
         volume_usdt AS volume,
         tx_count
       FROM token_candles
@@ -59,12 +46,12 @@ export async function getCandles(req, reply) {
     `, [address, timeframe, limit]);
 
     return rows.map(c => ({
-      time: Number(c.time_epoch),
-      open: Number(c.open),
-      high: Number(c.high),
-      low: Number(c.low),
-      close: Number(c.close),
-      volume: Number(c.volume),
+      time:    Number(c.time_epoch),
+      open:    Number(c.open),
+      high:    Number(c.high),
+      low:     Number(c.low),
+      close:   Number(c.close),
+      volume:  Number(c.volume),
       txCount: Number(c.tx_count),
     }));
 
@@ -78,19 +65,30 @@ export async function getCandles(req, reply) {
 // ===============================================================
 // GET EVENTS (MARKERS)
 // ===============================================================
-const TOTAL_SUPPLY = 1_000_000_000;
+
 export async function getEvents(req, reply) {
 
   try {
 
     const { address } = req.params;
-    const limit = Math.min(Number(req.query.limit) || 500, 100);
+    const limit       = Math.min(Number(req.query.limit) || 500, 100);
 
     if (!isValidAddress(address)) {
       return reply.code(400).send({ error: "invalid_address" });
     }
 
+    const addr = address.toLowerCase();
+
+    // Ambil dev transactions + hanya 1 ADD_LIQUIDITY (migrate pertama)
     const { rows } = await db.query(`
+      WITH migrate_first AS (
+        SELECT tx_hash
+        FROM token_transactions
+        WHERE token_address = $1
+          AND position = 'ADD_LIQUIDITY'
+        ORDER BY time ASC
+        LIMIT 1
+      )
       SELECT
         EXTRACT(EPOCH FROM time AT TIME ZONE 'UTC')::bigint AS time_epoch,
         position,
@@ -102,14 +100,14 @@ export async function getEvents(req, reply) {
         in_usdt_payable,
         price_usdt
       FROM token_transactions
-      WHERE LOWER(token_address) = LOWER($1)
+      WHERE token_address = $1
         AND (
           is_dev = true
-          OR position = 'ADD_LIQUIDITY'
+          OR tx_hash = (SELECT tx_hash FROM migrate_first)
         )
       ORDER BY time DESC
       LIMIT $2
-    `, [address, limit]);
+    `, [addr, limit]);
 
     const events = rows.map(tx => {
 
@@ -117,20 +115,20 @@ export async function getEvents(req, reply) {
       if (!time || isNaN(time)) return null;
 
       const usd   = Number(tx.in_usdt_payable ?? 0);
-      const token = Number(tx.amount_receive ?? 0);
-      const price = Number(tx.price_usdt ?? 0);
+      const token = Number(tx.amount_receive  ?? 0);
+      const price = Number(tx.price_usdt      ?? 0);
       const mc    = price > 0 ? price * TOTAL_SUPPLY : 0;
 
       const stats = {
         buy: {
-          txCount: tx.position === "BUY" && tx.is_dev ? 1 : 0,
-          totalUsd: tx.position === "BUY" && tx.is_dev ? usd : 0,
-          totalToken: tx.position === "BUY" && tx.is_dev ? token : 0
+          txCount:    tx.position === "BUY"  && tx.is_dev ? 1     : 0,
+          totalUsd:   tx.position === "BUY"  && tx.is_dev ? usd   : 0,
+          totalToken: tx.position === "BUY"  && tx.is_dev ? token : 0,
         },
         sell: {
-          txCount: tx.position === "SELL" && tx.is_dev ? 1 : 0,
-          totalUsd: tx.position === "SELL" && tx.is_dev ? usd : 0,
-          totalToken: tx.position === "SELL" && tx.is_dev ? Math.abs(token) : 0
+          txCount:    tx.position === "SELL" && tx.is_dev ? 1            : 0,
+          totalUsd:   tx.position === "SELL" && tx.is_dev ? usd          : 0,
+          totalToken: tx.position === "SELL" && tx.is_dev ? Math.abs(token) : 0,
         },
         avgMcUsd: mc
       };
@@ -138,9 +136,9 @@ export async function getEvents(req, reply) {
       if (tx.position === "BUY" && tx.is_dev) {
         return {
           time,
-          type: "DEV_BUY",
-          label: "DB",
-          color: "#22c55e",
+          type:   "DEV_BUY",
+          label:  "DB",
+          color:  "#22c55e",
           txHash: tx.tx_hash,
           wallet: tx.address_message_sender,
           stats
@@ -150,9 +148,9 @@ export async function getEvents(req, reply) {
       if (tx.position === "SELL" && tx.is_dev) {
         return {
           time,
-          type: "DEV_SELL",
-          label: "DS",
-          color: "#ef4444",
+          type:   "DEV_SELL",
+          label:  "DS",
+          color:  "#ef4444",
           txHash: tx.tx_hash,
           wallet: tx.address_message_sender,
           stats
@@ -162,9 +160,9 @@ export async function getEvents(req, reply) {
       if (tx.position === "ADD_LIQUIDITY") {
         return {
           time,
-          type: "MIGRATE",
-          label: "M",
-          color: "#3b82f6",
+          type:   "MIGRATE",
+          label:  "M",
+          color:  "#3b82f6",
           txHash: tx.tx_hash,
           stats
         };
@@ -177,9 +175,9 @@ export async function getEvents(req, reply) {
     return events;
 
   } catch (err) {
-    console.error("[EVENT API ERROR FULL]", err.message);
+    console.error("[EVENT API ERROR]", err.message);
     return reply.code(500).send({
-      error: "failed_to_fetch_events",
+      error:   "failed_to_fetch_events",
       message: err.message
     });
   }
@@ -189,6 +187,7 @@ export async function getEvents(req, reply) {
 // ===============================================================
 // GET EVENTS BY WALLET ADDRESS
 // ===============================================================
+
 export async function getEventsByAddress(req, reply) {
 
   try {
@@ -212,11 +211,12 @@ export async function getEventsByAddress(req, reply) {
         in_usdt_payable,
         price_usdt
       FROM token_transactions
-      WHERE LOWER(token_address) = LOWER($1)
-        AND LOWER(address_message_sender) = LOWER($2)
+      WHERE token_address = $1
+        AND address_message_sender = $2
+        AND position IN ('BUY', 'SELL')
       ORDER BY time DESC
       LIMIT $3
-    `, [address, wallet, limit]);
+    `, [address.toLowerCase(), wallet.toLowerCase(), limit]);
 
     const events = rows.map(tx => {
 
@@ -224,20 +224,20 @@ export async function getEventsByAddress(req, reply) {
       if (!time || isNaN(time)) return null;
 
       const usd   = Number(tx.in_usdt_payable ?? 0);
-      const token = Number(tx.amount_receive ?? 0);
-      const price = Number(tx.price_usdt ?? 0);
+      const token = Number(tx.amount_receive  ?? 0);
+      const price = Number(tx.price_usdt      ?? 0);
       const mc    = price > 0 ? price * TOTAL_SUPPLY : 0;
 
       const stats = {
         buy: {
-          txCount: tx.position === "BUY" ? 1 : 0,
-          totalUsd: tx.position === "BUY" ? usd : 0,
-          totalToken: tx.position === "BUY" ? token : 0
+          txCount:    tx.position === "BUY"  ? 1     : 0,
+          totalUsd:   tx.position === "BUY"  ? usd   : 0,
+          totalToken: tx.position === "BUY"  ? token : 0,
         },
         sell: {
-          txCount: tx.position === "SELL" ? 1 : 0,
-          totalUsd: tx.position === "SELL" ? usd : 0,
-          totalToken: tx.position === "SELL" ? Math.abs(token) : 0
+          txCount:    tx.position === "SELL" ? 1            : 0,
+          totalUsd:   tx.position === "SELL" ? usd          : 0,
+          totalToken: tx.position === "SELL" ? Math.abs(token) : 0,
         },
         avgMcUsd: mc
       };
@@ -245,9 +245,9 @@ export async function getEventsByAddress(req, reply) {
       if (tx.position === "BUY") {
         return {
           time,
-          type: "BUY",
-          label: "B",
-          color: "#22c55e",
+          type:   "BUY",
+          label:  "B",
+          color:  "#22c55e",
           txHash: tx.tx_hash,
           wallet: tx.address_message_sender,
           stats
@@ -257,9 +257,9 @@ export async function getEventsByAddress(req, reply) {
       if (tx.position === "SELL") {
         return {
           time,
-          type: "SELL",
-          label: "S",
-          color: "#ef4444",
+          type:   "SELL",
+          label:  "S",
+          color:  "#ef4444",
           txHash: tx.tx_hash,
           wallet: tx.address_message_sender,
           stats
@@ -275,7 +275,7 @@ export async function getEventsByAddress(req, reply) {
   } catch (err) {
     console.error("[EVENT BY ADDRESS ERROR]", err.message);
     return reply.code(500).send({
-      error: "failed_to_fetch_events_by_address",
+      error:   "failed_to_fetch_events_by_address",
       message: err.message
     });
   }
