@@ -7,6 +7,7 @@ import { ethers } from "ethers";
 import { TOPICS } from "../infra/topics.js";
 import { publish } from "../infra/wsbroker.js";
 import { getTransaction, getTransactionReceipt } from "../infra/rpcQueue.js";
+import { rpcTxProvider } from "../infra/provider.js";
 
 import { processLaunch } from "../service/fourmeme.service.js";
 import { getLaunchByToken, setTokenMigrated } from "../repository/launch.repository.js";
@@ -175,25 +176,28 @@ async function _handleCreate({ tx, receipt, block, blockNumber }) {
       const volumeUSDT = baseAmount * basePriceUSD;
 
       publish("new_token", {
-        tokenAddress,
-        symbol: launchInfo.symbol,
-        name: launchInfo.name,
-        basePair:    launchInfo.basePair,      // ← tambah
-        baseAddress: launchInfo.baseAddress,
-        imageUrl: launchInfo.imageUrl || null,
-        description: launchInfo.description || null,
-        website: launchInfo.websiteUrl || null,
-        telegram: launchInfo.telegramUrl || null,
-        twitter: launchInfo.twitterUrl || null,
-        devAddress,
-        price: priceUSDT,
-        marketcap: priceUSDT * TOTAL_SUPPLY,
-        volume24h: volumeUSDT,
-        txCount: 1,
-        holderCount: 1,
-        launchTime: block.timestamp * 1000,
-        source: "four_meme"
-      });
+  tokenAddress,
+  symbol: launchInfo.symbol,
+  name: launchInfo.name,
+  basePair:    launchInfo.basePair,
+  baseAddress: launchInfo.baseAddress,
+  imageUrl: launchInfo.imageUrl || null,
+  description: launchInfo.description || null,
+  website: launchInfo.websiteUrl || null,
+  telegram: launchInfo.telegramUrl || null,
+  twitter: launchInfo.twitterUrl || null,
+  devAddress,
+  price: priceUSDT,
+  marketcap: priceUSDT * TOTAL_SUPPLY,
+  volume24h: volumeUSDT,
+  txCount: 1,
+  holderCount: 1,
+  launchTime: block.timestamp * 1000,
+  txHash: tx.hash,
+  taxBuy:  launchInfo.taxBuy  ?? 0,   // ← tambah
+  taxSell: launchInfo.taxSell ?? 0,   // ← tambah
+  source: "four_meme"
+});
 
       logCreate({
         platform: "fourmeme",

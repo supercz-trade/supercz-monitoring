@@ -5,7 +5,7 @@
 
 import { ethers } from "ethers";
 import { TOPICS } from "../infra/topics.js";
-import { publish } from "../infra/wsbroker.js";                          // ✅ FIX: tambah import publish
+import { publish } from "../infra/wsbroker.js";
 import { getTransaction, getLogs, getBlock, getContractFields, getTransactionReceipt } from "../infra/rpcQueue.js";
 import { rpcTxProvider } from "../infra/provider.js";
 
@@ -19,10 +19,8 @@ import { getBasePrice } from "../price/binancePrice.js";
 import { getBasePair, normalizeBaseAddress } from "../utils/baseToken.js";
 import { logTrade, logCreate, logAddLiquidity, log } from "../infra/logger.js";
 import { addPairToMemory } from "./pancakeHandler.js";
-// [ADDED]
 import { updateLiquidityState } from "../service/liquidity.service.js";
 import { updateMigrationStats } from "../service/migrationStats.service.js";
-// import { subscribeLogs } from "../infra/provider.js";
 
 // ================= CONSTANTS =================
 
@@ -41,14 +39,12 @@ const TOKEN_ABI = [
 
 export let flapTokenSet = new Set();
 
-
 export function addFlapTokenToMemory(token) {
   flapTokenSet.add(token.toLowerCase());
 }
 
 // ================= INIT =================
 
-// [MODIFIED]
 async function init() {
   try {
     const tokens = await loadTokenFlap();
@@ -59,7 +55,7 @@ async function init() {
 
     flapTokenSet = new Set(
       tokens
-        .filter(t => typeof t === "string" && t.length > 0) // [ADDED] validation
+        .filter(t => typeof t === "string" && t.length > 0)
         .map(t => t.toLowerCase())
     );
 
@@ -67,8 +63,6 @@ async function init() {
 
   } catch (err) {
     console.error("[FLAP INIT ERROR]", err.message);
-
-    // [SAFE DEFAULT]
     flapTokenSet = new Set();
   }
 }
@@ -81,9 +75,7 @@ async function init() {
 const seenWS = new Set();
 
 // function startFlapWS() {
-
 //   console.log("[FLAP WS] Subscribing to token events...");
-
 //   subscribeLogs({
 //     topics: [[
 //       TOPICS.TOKEN_BOUGHT,
@@ -91,21 +83,14 @@ const seenWS = new Set();
 //       TOPICS.LAUNCHED_TO_DEX
 //     ]]
 //   }, async (log) => {
-
 //     try {
-
-//       // ================= DEDUPE =================
 //       if (seenWS.has(log.transactionHash)) return;
 //       seenWS.add(log.transactionHash);
-
 //       if (seenWS.size > 5000) {
 //         seenWS.delete(seenWS.values().next().value);
 //       }
-
-//       // ================= DECODE =================
 //       const topic = log.topics[0];
 //       let tokenAddress = null;
-
 //       if (topic === TOPICS.TOKEN_BOUGHT || topic === TOPICS.TOKEN_SOLD) {
 //         const d = ethers.AbiCoder.defaultAbiCoder().decode(
 //           ["uint256", "address", "address", "uint256", "uint256", "uint256", "uint256"],
@@ -113,7 +98,6 @@ const seenWS = new Set();
 //         );
 //         tokenAddress = d[1].toLowerCase();
 //       }
-
 //       if (topic === TOPICS.LAUNCHED_TO_DEX) {
 //         const d = ethers.AbiCoder.defaultAbiCoder().decode(
 //           ["address", "address", "uint256", "uint256"],
@@ -121,18 +105,11 @@ const seenWS = new Set();
 //         );
 //         tokenAddress = d[0].toLowerCase();
 //       }
-
 //       if (!tokenAddress || !flapTokenSet.has(tokenAddress)) return;
-
-//       // ================= FETCH TX =================
 //       const tx = await getTransaction(log.transactionHash);
 //       if (!tx) return;
-
-//       // ================= FETCH BLOCK (REAL TIMESTAMP) =================
 //       const block = await getBlock(log.blockNumber);
 //       if (!block) return;
-
-//       // ================= HANDLE =================
 //       await _handleBuySell({
 //         tx,
 //         logs: [log],
@@ -140,11 +117,9 @@ const seenWS = new Set();
 //         blockNumber: log.blockNumber,
 //         source: "ws"
 //       });
-
 //     } catch (err) {
 //       console.error("[FLAP WS ERROR]", err.message);
 //     }
-
 //   });
 // }
 
@@ -168,7 +143,6 @@ async function handleFlapBlock({ txMap, block, blockNumber }) {
         ? ((await getTransactionReceipt(txHash))?.logs ?? portalLogs)
         : portalLogs;
 
-      // ================= BUY / SELL / ADD LIQ =================
       await _handleBuySell({ tx, logs: allLogs, block, blockNumber, source: "portal" });
 
     } catch (err) {
@@ -276,7 +250,6 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
           name: d[4],
           symbol: d[5],
           meta: d[6],
-          // akan di-enrich dari TOKEN_QUOTE_SET & TAX_SET di bawah
           baseAddress: null,
           basePair: null,
           tax: 0
@@ -287,7 +260,6 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
         const d = _decode(["address", "address"], evLog.data);
         const tokenAddr = d[0].toLowerCase();
         const quoteAddr = normalizeBaseAddress(d[1]);
-        // enrich create yang matching
         const c = creates.find(x => x.tokenAddress === tokenAddr);
         if (c) {
           c.baseAddress = quoteAddr;
@@ -356,7 +328,8 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
 
   for (const create of creates) {
     try {
-      await _handleCreate({ create, tx, block, blockNumber });
+      // [MODIFIED] pass trades agar _handleCreate bisa detect initial buy
+      await _handleCreate({ create, tx, block, blockNumber, trades });
     } catch (err) {
       console.error("[FLAP CREATE ERROR]", err.message);
     }
@@ -372,11 +345,9 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
 
       let launchInfo = await getLaunchByToken(addLiquidity.tokenAddress);
 
-      // [ADDED] AUTO RECOVER
+      // AUTO RECOVER
       if (!launchInfo) {
         console.warn("[MIGRATE AUTO-REGISTER]", addLiquidity.tokenAddress);
-
-        // fallback minimal
         launchInfo = {
           tokenAddress: addLiquidity.tokenAddress,
           basePair: "BNB",
@@ -397,8 +368,6 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
       const { tokenAddress, pairAddress } = addLiquidity;
 
       console.log(`[ANTI-MISS MIGRATE] token=${tokenAddress} pair=${pairAddress} tx=${tx.hash}`);
-
-      // ================= CORE ACTION =================
 
       await setTokenMigrated(tokenAddress, new Date(block.timestamp * 1000).toISOString());
 
@@ -461,7 +430,7 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
         pairAddress
       });
 
-      // [ADDED] HARD DELETE FROM FLAP SET
+      // HARD DELETE FROM FLAP SET
       await deleteTokenFlap(tokenAddress);
       flapTokenSet.delete(tokenAddress);
 
@@ -495,8 +464,8 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
 
       const basePrice = getBasePrice(launchInfo.basePair);
 
-      const tokenAmt = Number(ethers.formatUnits(trade.amount, launchInfo.decimals ?? 18));
-      const basePaid = Number(ethers.formatUnits(trade.base - trade.fee, 18));
+      const tokenAmt   = Number(ethers.formatUnits(trade.amount, launchInfo.decimals ?? 18));
+      const basePaid   = Number(ethers.formatUnits(trade.base - trade.fee, 18));
       const baseAmount = Number(ethers.formatUnits(trade.base, 18));
 
       const priceBase  = tokenAmt > 0 ? baseAmount / tokenAmt : 0;
@@ -551,7 +520,8 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
 // HANDLE CREATE (dari TOKEN_CREATED log)
 // ===============================================================
 
-async function _handleCreate({ create, tx, block, blockNumber }) {
+// [MODIFIED] tambah parameter trades untuk detect initial dev buy
+async function _handleCreate({ create, tx, block, blockNumber, trades = [] }) {
 
   const { tokenAddress, creator, name, symbol, meta } = create;
 
@@ -615,14 +585,39 @@ async function _handleCreate({ create, tx, block, blockNumber }) {
     timestamp: block.timestamp * 1000
   });
 
+  // ===============================================================
+  // [MODIFIED] Hitung price dari initial dev buy jika ada
+  // ===============================================================
+
+  let price = 0, marketcap = 0, volume24h = 0, txCount = 0;
+
+  const initialBuy = trades.find(
+    t => t.token === tokenAddress && t.position === "BUY"
+  );
+
+  if (initialBuy && basePair) {
+    const basePrice = getBasePrice(basePair);
+    const tokenAmt  = Number(ethers.formatUnits(initialBuy.amount, 18));
+    const baseAmt   = Number(ethers.formatUnits(initialBuy.base, 18));
+
+    const priceBase = tokenAmt > 0 ? baseAmt / tokenAmt : 0;
+    price     = priceBase * basePrice;
+    marketcap = price * TOTAL_SUPPLY;
+    volume24h = baseAmt * basePrice;
+    txCount   = 1;
+  }
+
   publish("new_token", {
     tokenAddress, symbol, name,
     basePair, baseAddress,
     imageUrl, description,
     website: websiteUrl, telegram: telegramUrl, twitter: twitterUrl,
     devAddress: creator,
-    price: 0, marketcap: 0, volume24h: 0,
-    txCount: 0, holderCount: 1,
+    taxBuy:  tax ?? 0,
+    taxSell: tax ?? 0,
+    price, marketcap, volume24h,
+    txCount, holderCount: 1,
+    txHash: tx.hash,
     launchTime: block.timestamp * 1000,
     source: "flap.sh"
   });
@@ -685,8 +680,6 @@ async function _autoRegister({ tx, trade, block, blockNumber }) {
     migrated: false,
     verifiedCode: false
   });
-
-
 
   flapTokenSet.add(trade.token);
 

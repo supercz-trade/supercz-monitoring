@@ -44,8 +44,6 @@ function randomUrl() {
 }
 
 // ================= RPC PROXY =================
-// Proxy agar bisa dipakai langsung seperti provider biasa
-// tanpa () — dan setiap method call random ke key berbeda
 
 function makeRandomProxy(cache) {
   return new Proxy({}, {
@@ -59,6 +57,24 @@ function makeRandomProxy(cache) {
 
 export const rpcLogsProvider = makeRandomProxy(_rpcLogsCache);
 export const rpcTxProvider   = makeRandomProxy(_rpcTxCache);
+
+// ================= WSS POOL =================
+
+const WSS_BASE_URL = process.env.BSC_WSS_BLOCK; // wss://bsc-mainnet.core.chainstack.com/
+
+const WSS_API_KEYS = process.env.WSS_API_KEY
+  ? process.env.WSS_API_KEY.split(",").map(k => k.trim()).filter(Boolean)
+  : [];
+
+const WSS_URLS = WSS_API_KEYS.length > 0
+  ? WSS_API_KEYS.map(key => `${WSS_BASE_URL}${key}`)
+  : [WSS_BASE_URL];
+
+function randomWssUrl() {
+  return WSS_URLS[Math.floor(Math.random() * WSS_URLS.length)];
+}
+
+console.log(`[PROVIDER] WSS pool ready — ${WSS_URLS.length} endpoint(s)`);
 
 // ================= WSS GETTER =================
 
@@ -75,10 +91,11 @@ export function onBlock(listener) {
 
 function createProvider() {
 
-  console.log("[WSS] connecting...");
+  const url = randomWssUrl();
+  console.log("[WSS] connecting...", url.slice(0, 50) + "...");
 
   const provider = new WebSocketProvider(
-    process.env.BSC_WSS_BLOCK,
+    url,
     BSC_NETWORK,
     { staticNetwork: BSC_NETWORK }
   );
@@ -116,7 +133,8 @@ function scheduleReconnect() {
 
   if (_reconnectTimer) return;
 
-  reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX);
+  // reset delay — langsung reconnect tanpa nunggu lama
+  reconnectDelay = RECONNECT_MIN;
   console.log(`[WSS] reconnecting in ${reconnectDelay}ms`);
 
   _reconnectTimer = setTimeout(() => {
@@ -145,6 +163,7 @@ setInterval(async () => {
     await _wssProvider.getBlockNumber();
   } catch (err) {
     console.warn("[WSS] heartbeat failed:", err?.message);
+    scheduleReconnect();
   }
 
 }, 20000);
@@ -157,7 +176,6 @@ setInterval(() => {
 
   if (diff > 60000) {
     console.warn("[WATCHDOG] block stuck, forcing reconnect");
-    reconnectDelay = RECONNECT_MIN;
     scheduleReconnect();
   }
 
