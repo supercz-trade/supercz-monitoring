@@ -213,8 +213,6 @@ async function init() {
 
 async function handleTokenMigratedBlock({ blockNumber }) {
 
-  if (blockNumber % 2 !== 0) return;
-
   const seenLogs = new Set();
 
   if (!pairAddresses.length) return;
