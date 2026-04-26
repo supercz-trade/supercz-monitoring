@@ -87,7 +87,12 @@ async function _resolveWallet({ txHash, tokenAddress, pairAddress, position, txF
           return prevTo === from;
         });
 
-        if (!prev) return from; // tidak ada yg kirim ke `from` = wallet asli
+        if (!prev) {
+          // Tidak ada Transfer masuk ke `from` dalam token ini
+          // Kemungkinan aggregator multi-hop pakai token lain dulu
+          // tx.from selalu wallet asli — pakai itu sebagai fallback
+          return origin || from;
+        }
 
         const realWallet = "0x" + prev.topics[1].slice(26).toLowerCase();
 
@@ -125,15 +130,25 @@ async function _resolveWallet({ txHash, tokenAddress, pairAddress, position, txF
 
       if (!recipients.length) return null;
 
+      // Filter out contract addresses yang bukan wallet asli:
+      // - token contract sendiri (bisa jadi liquidity/bonding curve)
+      // - pair address
+      const filtered = recipients.filter(r =>
+        r.address !== tokenAddress &&
+        r.address !== pair
+      );
+
+      const pool = filtered.length ? filtered : recipients;
+
       // Priority 1: tx.from ada di antara recipients
       if (origin) {
-        const match = recipients.find(r => r.address === origin);
+        const match = pool.find(r => r.address === origin);
         if (match) return match.address;
       }
 
       // Priority 2: recipient dengan amount terbesar
-      recipients.sort((a, b) => (b.amount > a.amount ? 1 : -1));
-      return recipients[0].address;
+      pool.sort((a, b) => (b.amount > a.amount ? 1 : -1));
+      return pool[0].address;
 
     }
 
