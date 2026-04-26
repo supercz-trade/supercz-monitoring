@@ -23,22 +23,14 @@ export async function getWalletOverview(req, reply) {
 
     const [deployResult, tradingResult] = await Promise.all([
 
-      // ── Deploy stats — JOIN bukan correlated subquery ─────────
+      // ── Deploy stats — aggregate only, no array needed
       db.query(`
         SELECT
-          lt.token_address,
-          lt.symbol,
-          lt.image_url,
-          COALESCE(ath.max_price, 0) AS all_time_high
+          COUNT(*)                                        AS deploy_count,
+          COUNT(*) FILTER (WHERE lt.migrated = true)     AS migrated_count,
+          COUNT(*) FILTER (WHERE lt.migrated = false)    AS active_count
         FROM launch_tokens lt
-        LEFT JOIN (
-          SELECT token_address, MAX(price_usdt) AS max_price
-          FROM token_transactions
-          WHERE position IN ('BUY', 'SELL')
-          GROUP BY token_address
-        ) ath ON ath.token_address = lt.token_address
         WHERE lt.developer_address = $1
-        ORDER BY lt.launch_time DESC
       `, [addr]),
 
       // ── Semua trading stats dalam 1 query pakai CTE ───────────
@@ -117,13 +109,9 @@ export async function getWalletOverview(req, reply) {
 
       // ── Deploy ───────────────────────────────────────────────
       deploy: {
-        deployCount: deployResult.rows.length,
-        deployData:  deployResult.rows.map(r => ({
-          address:     r.token_address,
-          symbol:      r.symbol,
-          imageUrl:    r.image_url || null,
-          allTimeHigh: Number(r.all_time_high || 0)
-        }))
+        deployCount:   Number(deployResult.rows[0]?.deploy_count   || 0),
+        migratedCount: Number(deployResult.rows[0]?.migrated_count || 0),
+        activeCount:   Number(deployResult.rows[0]?.active_count   || 0),
       },
 
       // ── Trading ──────────────────────────────────────────────
