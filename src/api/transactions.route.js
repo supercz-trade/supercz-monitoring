@@ -41,7 +41,7 @@ export async function getTransactionsByToken(req, reply) {
         tag_address,
         is_dev
       FROM token_transactions
-      WHERE LOWER(token_address) = LOWER($1)
+      WHERE token_address = LOWER($1)
         ${posSQL}
       ORDER BY time DESC
       LIMIT $2
@@ -102,8 +102,8 @@ export async function getTransactionsByTokenAndWallet(req, reply) {
         tag_address,
         is_dev
       FROM token_transactions
-      WHERE LOWER(token_address) = LOWER($1)
-        AND LOWER(address_message_sender) = LOWER($2)
+      WHERE token_address = LOWER($1)
+        AND address_message_sender = LOWER($2)
         ${posSQL}
       ORDER BY time DESC
       LIMIT $3
