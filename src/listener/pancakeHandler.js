@@ -41,9 +41,13 @@ async function _getReceipt(txHash) {
 
 // ===============================================================
 // RESOLVE REAL WALLET
+// FIX: BUY  — prioritas tx.from di antara semua recipient dari pair,
+//             fallback recipient dengan amount token terbesar
+// FIX: SELL — trace balik dari pair, skip router/intermediary
+//             dengan cek apakah `from` juga menerima dari address lain
 // ===============================================================
 
-async function _resolveWallet({ txHash, tokenAddress, pairAddress, position }) {
+async function _resolveWallet({ txHash, tokenAddress, pairAddress, position, txFrom }) {
 
   try {
 
@@ -58,47 +62,78 @@ async function _resolveWallet({ txHash, tokenAddress, pairAddress, position }) {
 
     if (!transfers.length) return null;
 
-    const pair = pairAddress.toLowerCase();
+    const pair   = pairAddress.toLowerCase();
+    const origin = txFrom?.toLowerCase() ?? null;
 
+    // ── SELL ──────────────────────────────────────────────────────
+    // Token masuk ke pair. Flow via router: Wallet → Router → Pair
+    // Cari Transfer yang `to === pair`, lalu trace balik:
+    //   - kalau `from` tersebut juga menerima token dari address lain
+    //     berarti itu router/intermediary → ambil pengirim sebelumnya
+    //   - kalau tidak ada pengirim sebelumnya → `from` = wallet asli
+    // Priority: tx.from kalau cocok dengan chain, fallback trace-back
     if (position === "SELL") {
 
       for (const t of transfers) {
         const from = "0x" + t.topics[1].slice(26).toLowerCase();
         const to   = "0x" + t.topics[2].slice(26).toLowerCase();
-        if (to === pair) return from;
+
+        if (to !== pair) continue;
+
+        // Cek apakah `from` ini juga menerima token dari address lain
+        // Kalau iya → itu router, ambil pengirim ke router
+        const prev = transfers.find(p => {
+          const prevTo = "0x" + p.topics[2].slice(26).toLowerCase();
+          return prevTo === from;
+        });
+
+        if (!prev) return from; // tidak ada yg kirim ke `from` = wallet asli
+
+        const realWallet = "0x" + prev.topics[1].slice(26).toLowerCase();
+
+        // Validasi: kalau tx.from cocok dengan hasil trace, pakai itu
+        if (origin && realWallet === origin) return realWallet;
+
+        return realWallet;
       }
 
-    } else if (position === "BUY") {
+    }
 
-      let recipient = null;
+    // ── BUY ───────────────────────────────────────────────────────
+    // Token keluar dari pair ke beberapa address (aggregator bisa split).
+    // Priority: tx.from — dia yang sign TX = wallet asli
+    // Fallback: recipient dengan amount token terbesar dari pair
+    if (position === "BUY") {
+
+      // Kumpulkan semua Transfer keluar dari pair beserta amount-nya
+      const recipients = [];
+
       for (const t of transfers) {
         const from = "0x" + t.topics[1].slice(26).toLowerCase();
         const to   = "0x" + t.topics[2].slice(26).toLowerCase();
-        if (from === pair) {
-          recipient = to;
-          break;
-        }
+
+        if (from !== pair) continue;
+
+        // Decode amount dari data (uint256 = 32 bytes = 64 hex chars)
+        let amount = 0n;
+        try {
+          amount = BigInt("0x" + t.data.slice(2, 66));
+        } catch {}
+
+        recipients.push({ address: to, amount });
       }
 
-      if (!recipient) return null;
+      if (!recipients.length) return null;
 
-      // follow Transfer chain sampai terminal
-      const visited = new Set();
-
-      while (recipient && !visited.has(recipient)) {
-        visited.add(recipient);
-
-        const next = transfers.find(t => {
-          const from = "0x" + t.topics[1].slice(26).toLowerCase();
-          return from === recipient && !visited.has("0x" + t.topics[2].slice(26).toLowerCase());
-        });
-
-        if (!next) break;
-
-        recipient = "0x" + next.topics[2].slice(26).toLowerCase();
+      // Priority 1: tx.from ada di antara recipients
+      if (origin) {
+        const match = recipients.find(r => r.address === origin);
+        if (match) return match.address;
       }
 
-      return recipient;
+      // Priority 2: recipient dengan amount terbesar
+      recipients.sort((a, b) => (b.amount > a.amount ? 1 : -1));
+      return recipients[0].address;
 
     }
 
@@ -350,7 +385,7 @@ async function _handleSwap({ tx, logs, block, blockNumber, syncMap = new Map() }
     let wallet = tx.from?.toLowerCase();
 
     try {
-      const resolved = await _resolveWallet({ txHash: tx.hash, tokenAddress, pairAddress, position });
+      const resolved = await _resolveWallet({ txHash: tx.hash, tokenAddress, pairAddress, position, txFrom: tx.from });
       if (resolved) wallet = resolved;
     } catch (err) {
       log.warn("[PANCAKE] wallet resolve failed, fallback tx.from:", err.message);

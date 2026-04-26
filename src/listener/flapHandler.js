@@ -315,9 +315,40 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
       const priceBase  = tokenAmt > 0 ? baseAmount / tokenAmt : 0;
       const priceUSDT  = priceBase * basePrice;
       const volumeUSDT = baseAmount * basePrice;
-      const isDev      = trade.wallet === launchInfo.developerAddress;
 
-      logTrade({ platform: "flap", position: trade.position, tokenAddress: trade.token, tokenSymbol: launchInfo.symbol, tokenAmount: tokenAmt, baseSymbol: launchInfo.basePair, baseAmount: basePaid, priceBase, priceUSDT, volumeUSDT, txHash: tx.hash, blockNumber, timestamp: block.timestamp * 1000, wallet: trade.wallet, isDev });
+      // Resolve wallet asli via TransferFlapToken log di receipt
+      // BUY  → `to`   di TransferFlapToken = wallet asli
+      // SELL → `from` di TransferFlapToken = wallet asli
+      // Fallback: trade.wallet dari event data
+      let wallet = trade.wallet;
+      try {
+        const receipt = await getTransactionReceipt(tx.hash);
+        if (receipt) {
+          const flapTransfers = receipt.logs.filter(l =>
+            l.address.toLowerCase() === trade.token &&
+            l.topics[0] === TOPICS.TRANSFER_FLAP
+          );
+
+          if (flapTransfers.length) {
+            // TransferFlapToken(address from, address to, uint256 value) — semua di data, tidak indexed
+            const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
+              ["address", "address", "uint256"],
+              flapTransfers[0].data
+            );
+            const flapFrom = decoded[0].toLowerCase();
+            const flapTo   = decoded[1].toLowerCase();
+
+            if (trade.position === "BUY")  wallet = flapTo;
+            if (trade.position === "SELL") wallet = flapFrom;
+          }
+        }
+      } catch (err) {
+        log.warn("[FLAP] resolveWallet via TransferFlapToken failed:", err.message);
+      }
+
+      const isDev = wallet === launchInfo.developerAddress;
+
+      logTrade({ platform: "flap", position: trade.position, tokenAddress: trade.token, tokenSymbol: launchInfo.symbol, tokenAmount: tokenAmt, baseSymbol: launchInfo.basePair, baseAmount: basePaid, priceBase, priceUSDT, volumeUSDT, txHash: tx.hash, blockNumber, timestamp: block.timestamp * 1000, wallet, isDev });
 
       await insertTransaction({
         tokenAddress: trade.token,
@@ -326,7 +357,7 @@ async function _handleBuySell({ tx, logs, block, blockNumber, source = "portal" 
         position: trade.position,
         amountReceive: tokenAmt, basePayable: launchInfo.basePair, amountBasePayable: basePaid,
         inUSDTPayable: volumeUSDT, priceBase, priceUSDT,
-        addressMessageSender: trade.wallet,
+        addressMessageSender: wallet,
         tagAddress: isDev ? "Developer" : null, isDev
       });
 
