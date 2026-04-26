@@ -21,16 +21,35 @@ export async function getWalletOverview(req, reply) {
 
     const addr = address.toLowerCase();
 
-    const [deployResult, tradingResult] = await Promise.all([
+    const [deployAggResult, deployListResult, tradingResult] = await Promise.all([
 
-      // ── Deploy stats — aggregate only, no array needed
+      // ── Deploy aggregate counts
       db.query(`
         SELECT
-          COUNT(*)                                        AS deploy_count,
-          COUNT(*) FILTER (WHERE lt.migrated = true)     AS migrated_count,
-          COUNT(*) FILTER (WHERE lt.migrated = false)    AS active_count
+          COUNT(*)                                     AS deploy_count,
+          COUNT(*) FILTER (WHERE migrated = true)      AS migrated_count,
+          COUNT(*) FILTER (WHERE migrated = false)     AS active_count
+        FROM launch_tokens
+        WHERE developer_address = $1
+      `, [addr]),
+
+      // ── Deploy token list — all tokens, newest first
+      db.query(`
+        SELECT
+          lt.token_address,
+          lt.symbol,
+          lt.image_url,
+          lt.migrated,
+          COALESCE(ath.max_price, 0) AS all_time_high
         FROM launch_tokens lt
+        LEFT JOIN (
+          SELECT token_address, MAX(price_usdt) AS max_price
+          FROM token_transactions
+          WHERE position IN ('BUY', 'SELL')
+          GROUP BY token_address
+        ) ath ON ath.token_address = lt.token_address
         WHERE lt.developer_address = $1
+        ORDER BY lt.launch_time DESC
       `, [addr]),
 
       // ── Semua trading stats dalam 1 query pakai CTE ───────────
@@ -109,9 +128,16 @@ export async function getWalletOverview(req, reply) {
 
       // ── Deploy ───────────────────────────────────────────────
       deploy: {
-        deployCount:   Number(deployResult.rows[0]?.deploy_count   || 0),
-        migratedCount: Number(deployResult.rows[0]?.migrated_count || 0),
-        activeCount:   Number(deployResult.rows[0]?.active_count   || 0),
+        deployCount:   Number(deployAggResult.rows[0]?.deploy_count   || 0),
+        migratedCount: Number(deployAggResult.rows[0]?.migrated_count || 0),
+        activeCount:   Number(deployAggResult.rows[0]?.active_count   || 0),
+        deployData:    deployListResult.rows.map(r => ({
+          address:     r.token_address,
+          symbol:      r.symbol,
+          imageUrl:    r.image_url  || null,
+          migrated:    r.migrated   ?? false,
+          allTimeHigh: Number(r.all_time_high || 0),
+        })),
       },
 
       // ── Trading ──────────────────────────────────────────────
