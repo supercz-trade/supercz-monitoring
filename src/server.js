@@ -37,6 +37,8 @@ import { getPlatformStats, getPlatformVolumeChart } from "./api/platform.route.j
 import { getGasPrice } from "./api/utils_route.js"; // [ADDED]
 import debugRoutes from "./api/debug.routes.js";
 
+import { syncAllTokens } from "./service/holderSync.service.js"; // [ADDED] holder sync
+
 import fs   from "fs";
 import path from "path";
 
@@ -171,6 +173,16 @@ async function main() {
   // ============================================================
 
   registerWsRoutes(fastify);
+
+   setInterval(async () => { // [ADDED] scheduler loop
+    try {
+      console.log("[HOLDER SYNC] start"); // [ADDED] log
+      await syncAllTokens(); // [ADDED] execute sync
+      console.log("[HOLDER SYNC] done"); // [ADDED] log
+    } catch (err) {
+      console.error("[HOLDER SYNC ERROR]", err.message); // [ADDED] error handling
+    }
+  }, 60_000);
 
   // ============================================================
   // 7. Start server

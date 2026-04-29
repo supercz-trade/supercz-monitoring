@@ -82,14 +82,14 @@ async function calcTokenStats(addresses) {
   const statsMap = {};
   for (const r of statsResult.rows) {
     statsMap[r.token_address] = {
-      priceUsdt:   Number(r.price_usdt        || 0),
-      marketCap:   Number(r.marketcap         || 0),
-      volumeUsdt:  Number(r.volume_usdt       || 0),
-      txCount:     Number(r.tx_count          || 0),
-      holderCount: Number(r.holder_count      || 0),
-      devSupply:   Number(r.dev_supply        || 0),
+      priceUsdt: Number(r.price_usdt || 0),
+      marketCap: Number(r.marketcap || 0),
+      volumeUsdt: Number(r.volume_usdt || 0),
+      txCount: Number(r.tx_count || 0),
+      holderCount: Number(r.holder_count || 0),
+      devSupply: Number(r.dev_supply || 0),
       top10Supply: Number(r.top_holder_supply || 0),
-      paperPct:    Number(r.paperhand_pct     || 0),
+      paperPct: Number(r.paperhand_pct || 0),
     };
   }
 
@@ -115,15 +115,15 @@ async function calcTokenStats(addresses) {
 
   const devMarkMap = {};
   for (const r of devMarkResult.rows) {
-    const buyCount   = Number(r.buy_count   || 0);
-    const sellCount  = Number(r.sell_count  || 0);
+    const buyCount = Number(r.buy_count || 0);
+    const sellCount = Number(r.sell_count || 0);
     const devBalance = Number(r.dev_balance || 0);
 
     let mark = "DH";
     if (sellCount > 0 && devBalance < DEV_DUST_THRESHOLD) mark = "DS";
-    else if (sellCount > 0 && buyCount > sellCount)       mark = "DB";
-    else if (sellCount > 0)                               mark = "DP";
-    else if (buyCount > 1)                                mark = "DB";
+    else if (sellCount > 0 && buyCount > sellCount) mark = "DB";
+    else if (sellCount > 0) mark = "DP";
+    else if (buyCount > 1) mark = "DB";
 
     devMarkMap[r.token_address] = mark;
   }
@@ -131,11 +131,33 @@ async function calcTokenStats(addresses) {
   return { statsMap, holderMap, holderCountMap, paperMap, devMarkMap };
 }
 
+// [ADDED] hitung 24h price change
+async function get24hChange(tokenAddress) {
+
+  const { rows } = await db.query(`
+    SELECT close
+    FROM token_candles
+    WHERE LOWER(token_address) = LOWER($1)
+      AND timeframe = '1h'
+    ORDER BY start_time DESC
+    LIMIT 24
+  `, [tokenAddress]);
+
+  if (rows.length < 2) return 0;
+
+  const current = Number(rows[0].close || 0);
+  const past = Number(rows[rows.length - 1].close || 0);
+
+  if (!past) return 0;
+
+  return ((current - past) / past) * 100;
+}
+
 function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, devMarkMap }) {
 
-  const liq    = getLiquidityStateCache(t.token_address);
+  const liq = getLiquidityStateCache(t.token_address);
   const supply = Number(t.supply || 0);
-  const stats  = statsMap[t.token_address] || {
+  const stats = statsMap[t.token_address] || {
     priceUsdt: 0, marketCap: 0, volumeUsdt: 0, txCount: 0
   };
 
@@ -147,7 +169,7 @@ function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, 
       ? parseFloat(((balance / supply) * 100).toFixed(2))
       : 0;
     return {
-      rank:    i + 1,
+      rank: i + 1,
       address: h.holder_address,
       balance,
       pct,
@@ -155,39 +177,39 @@ function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, 
     };
   });
 
-  const devHolder  = top10.find(h => h.isDev);
+  const devHolder = top10.find(h => h.isDev);
   const devHoldPct = devHolder ? devHolder.pct : 0;
-  const mode       = t.migrated ? "dex" : (liq?.mode || "bonding");
+  const mode = t.migrated ? "dex" : (liq?.mode || "bonding");
 
   return {
-    launchTime:       t.launch_time,
-    tokenAddress:     t.token_address,
+    launchTime: t.launch_time,
+    tokenAddress: t.token_address,
     developerAddress: t.developer_address || null,
-    name:             t.name,
-    symbol:           t.symbol,
+    name: t.name,
+    symbol: t.symbol,
 
-    basePair:    liq?.base_symbol || t.base_pair    || null,
-    baseAddress: t.base_address   || null,
+    basePair: liq?.base_symbol || t.base_pair || null,
+    baseAddress: t.base_address || null,
 
     description: t.description,
-    imageUrl:    t.image_url,
-    sourceFrom:  t.source_from,
+    imageUrl: t.image_url,
+    sourceFrom: t.source_from,
 
-    website:  t.website_url,
+    website: t.website_url,
     telegram: t.telegram_url,
-    twitter:  t.twitter_url,
+    twitter: t.twitter_url,
 
     totalSupply: supply,
-    decimals:    Number(t.decimals || 18),
+    decimals: Number(t.decimals || 18),
 
-    priceUsdt:   stats.priceUsdt,
-    marketCap:   stats.marketCap,
-    volumeUsdt:  stats.volumeUsdt,
-    txCount:     stats.txCount,
+    priceUsdt: stats.priceUsdt,
+    marketCap: stats.marketCap,
+    volumeUsdt: stats.volumeUsdt,
+    txCount: stats.txCount,
     holderCount: holderCountMap[t.token_address] || 0,
 
     tax: {
-      buy:  t.tax_buy,
+      buy: t.tax_buy,
       sell: t.tax_sell
     },
 
@@ -203,18 +225,18 @@ function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, 
       targetUSD: liq?.target || 0,
       bondingLiquidity: {
         base: liq?.bonding_base || 0,
-        usd:  liq?.bonding_usd  || 0
+        usd: liq?.bonding_usd || 0
       }
     }),
 
     ...(mode === "dex" && {
       liquidity: {
         base: liq?.base_liquidity || 0,
-        usd:  liq?.liquidity_usd  || 0
+        usd: liq?.liquidity_usd || 0
       }
     }),
 
-    migrated:     t.migrated,
+    migrated: t.migrated,
     migratedTime: t.migrated_time,
 
     devMark: devMarkMap[t.token_address] || "DH",
@@ -231,7 +253,7 @@ export async function getNewTokens(req, reply) {
 
   try {
 
-    const limit    = Math.min(Math.max(parseInt(req.query?.limit) || 50, 1), 500);
+    const limit = Math.min(Math.max(parseInt(req.query?.limit) || 50, 1), 500);
     const cacheKey = `new_tokens_${limit}`;
 
     const cached = cacheGet(cacheKey);
@@ -248,8 +270,8 @@ export async function getNewTokens(req, reply) {
     if (!rows.length) return [];
 
     const addresses = rows.map(r => r.token_address);
-    const maps      = await calcTokenStats(addresses);
-    const tokens    = rows.map(t => buildTokenResponse(t, maps));
+    const maps = await calcTokenStats(addresses);
+    const tokens = rows.map(t => buildTokenResponse(t, maps));
 
     cacheSet(cacheKey, tokens, 10_000);
 
@@ -280,16 +302,17 @@ export async function getTokenInfo(req, reply) {
     const addr = token.token_address;
     const maps = await calcTokenStats([addr]);
 
-    const stats      = maps.statsMap[addr] || { priceUsdt: 0, marketCap: 0, volumeUsdt: 0, txCount: 0 };
-    const supply     = Number(token.supply || 0);
-    const liq        = getLiquidityStateCache(addr);
+    const stats = maps.statsMap[addr] || { priceUsdt: 0, marketCap: 0, volumeUsdt: 0, txCount: 0 };
+    const supply = Number(token.supply || 0);
+    const liq = getLiquidityStateCache(addr);
+    const change24h = await get24hChange(addr);
     const topHolders = (maps.holderMap[addr] || []).map((h, i) => {
       const balance = Number(h.balance || 0);
-      const pct     = supply > 0
+      const pct = supply > 0
         ? parseFloat(((balance / supply) * 100).toFixed(2))
         : 0;
       return {
-        rank:    i + 1,
+        rank: i + 1,
         address: h.holder_address,
         balance,
         pct,
@@ -297,39 +320,40 @@ export async function getTokenInfo(req, reply) {
       };
     });
 
-    const devHolder  = topHolders.find(h => h.isDev);
+    const devHolder = topHolders.find(h => h.isDev);
     const devHoldPct = devHolder ? devHolder.pct : 0;
-    const mode       = liq?.mode || (token.migrated ? "dex" : "bonding");
+    const mode = liq?.mode || (token.migrated ? "dex" : "bonding");
 
     return {
-      launchTime:       token.launch_time,
-      tokenAddress:     token.token_address,
+      launchTime: token.launch_time,
+      tokenAddress: token.token_address,
       developerAddress: token.developer_address || null,
-      name:             token.name,
-      symbol:           token.symbol,
+      name: token.name,
+      symbol: token.symbol,
 
-      basePair:    liq?.base_symbol || token.base_pair || null,
+      basePair: liq?.base_symbol || token.base_pair || null,
       baseAddress: token.base_address || null,
 
       description: token.description,
-      imageUrl:    token.image_url,
-      sourceFrom:  token.source_from,
+      imageUrl: token.image_url,
+      sourceFrom: token.source_from,
 
-      website:  token.website_url,
+      website: token.website_url,
       telegram: token.telegram_url,
-      twitter:  token.twitter_url,
+      twitter: token.twitter_url,
 
       totalSupply: supply,
-      decimals:    Number(token.decimals || 18),
+      decimals: Number(token.decimals || 18),
 
-      priceUsdt:   stats.priceUsdt,
-      marketCap:   stats.marketCap,
-      volumeUsdt:  stats.volumeUsdt,
-      txCount:     stats.txCount,
+      priceUsdt: stats.priceUsdt,
+      marketCap: stats.marketCap,
+      priceChange24h: change24h, // [ADDED] 
+      volumeUsdt: stats.volumeUsdt,
+      txCount: stats.txCount,
       holderCount: maps.holderCountMap[addr] || 0,
 
       tax: {
-        buy:  token.tax_buy,
+        buy: token.tax_buy,
         sell: token.tax_sell
       },
 
@@ -343,18 +367,18 @@ export async function getTokenInfo(req, reply) {
         targetUSD: liq?.target || 0,
         bondingLiquidity: {
           base: liq?.bonding_base || 0,
-          usd:  liq?.bonding_usd  || 0
+          usd: liq?.bonding_usd || 0
         }
       }),
 
       ...(mode === "dex" && {
         liquidity: {
           base: liq?.base_liquidity || 0,
-          usd:  liq?.liquidity_usd  || 0
+          usd: liq?.liquidity_usd || 0
         }
       }),
 
-      migrated:     token.migrated,
+      migrated: token.migrated,
       migratedTime: token.migrated_time,
 
       devMark: maps.devMarkMap[addr] || "DH",
@@ -377,7 +401,7 @@ export async function getTokensMigrating(req, reply) {
 
   try {
 
-    const limit    = Math.min(Math.max(parseInt(req.query?.limit) || 50, 1), 500);
+    const limit = Math.min(Math.max(parseInt(req.query?.limit) || 50, 1), 500);
     const cacheKey = `tokens_migrating_${limit}`;
 
     const cached = cacheGet(cacheKey);
@@ -396,8 +420,8 @@ export async function getTokensMigrating(req, reply) {
     if (!rows.length) return [];
 
     const addresses = rows.map(r => r.token_address);
-    const maps      = await calcTokenStats(addresses);
-    const tokens    = rows.map(t => buildTokenResponse(t, maps));
+    const maps = await calcTokenStats(addresses);
+    const tokens = rows.map(t => buildTokenResponse(t, maps));
 
     cacheSet(cacheKey, tokens, 10_000);
 
@@ -414,7 +438,7 @@ export async function getTokensMigrated(req, reply) {
 
   try {
 
-    const limit    = Math.min(Math.max(parseInt(req.query?.limit) || 50, 1), 500);
+    const limit = Math.min(Math.max(parseInt(req.query?.limit) || 50, 1), 500);
     const cacheKey = `tokens_migrated_${limit}`;
 
     const cached = cacheGet(cacheKey);
@@ -431,8 +455,8 @@ export async function getTokensMigrated(req, reply) {
     if (!rows.length) return [];
 
     const addresses = rows.map(r => r.token_address);
-    const maps      = await calcTokenStats(addresses);
-    const tokens    = rows.map(t => buildTokenResponse(t, maps));
+    const maps = await calcTokenStats(addresses);
+    const tokens = rows.map(t => buildTokenResponse(t, maps));
 
     cacheSet(cacheKey, tokens, 10_000);
 
