@@ -182,7 +182,7 @@ async function main() {
     } catch (err) {
       console.error("[HOLDER SYNC ERROR]", err.message); // [ADDED] error handling
     }
-  }, 60_000);
+  }, 180_000);
 
   // ============================================================
   // 7. Start server
