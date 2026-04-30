@@ -20,9 +20,18 @@ function cacheSet(key, value, ttlMs = 10_000) {
 async function calcTokenStats(addresses) {
 
   const [statsResult, holderResult, devMarkResult] = await Promise.all([
+
     db.query(`
-      SELECT token_address, price_usdt, marketcap, volume_usdt, tx_count,
-             holder_count, dev_supply, top_holder_supply, paperhand_pct
+      SELECT
+        token_address,
+        price_usdt,
+        marketcap,
+        volume_usdt,
+        tx_count,
+        holder_count,
+        dev_supply,
+        top_holder_supply,
+        paperhand_pct
       FROM token_stats
       WHERE token_address = ANY($1)
     `, [addresses]),
@@ -30,30 +39,44 @@ async function calcTokenStats(addresses) {
     db.query(`
       SELECT token_address, holder_address, balance
       FROM (
-        SELECT token_address, holder_address, balance,
-               ROW_NUMBER() OVER (PARTITION BY token_address ORDER BY balance DESC) as rn
+        SELECT
+          token_address,
+          holder_address,
+          balance,
+          ROW_NUMBER() OVER (
+            PARTITION BY token_address
+            ORDER BY balance DESC
+          ) as rn
         FROM token_holders th
         WHERE token_address = ANY($1)
+          AND EXISTS (
+            SELECT 1 FROM token_transactions tt
+            WHERE LOWER(tt.token_address)          = LOWER(th.token_address)
+              AND LOWER(tt.address_message_sender) = LOWER(th.holder_address)
+              AND tt.position IN ('BUY', 'SELL')
+          )
       ) ranked
       WHERE rn <= 10
     `, [addresses]),
 
     db.query(`
-      SELECT tt.token_address,
-             COALESCE(th.balance, 0) AS dev_balance,
-             COUNT(*) FILTER (WHERE tt.position = 'BUY') AS buy_count,
-             COUNT(*) FILTER (WHERE tt.position = 'SELL') AS sell_count
+      SELECT
+        tt.token_address,
+        COALESCE(th.balance, 0)                               AS dev_balance,
+        COUNT(*) FILTER (WHERE tt.position = 'BUY')           AS buy_count,
+        COUNT(*) FILTER (WHERE tt.position = 'SELL')          AS sell_count
       FROM token_transactions tt
       JOIN launch_tokens lt
-        ON LOWER(lt.token_address) = LOWER(tt.token_address)
+        ON LOWER(lt.token_address)     = LOWER(tt.token_address)
        AND LOWER(lt.developer_address) = LOWER(tt.address_message_sender)
       LEFT JOIN token_holders th
-        ON LOWER(th.token_address) = LOWER(tt.token_address)
+        ON LOWER(th.token_address)  = LOWER(tt.token_address)
        AND LOWER(th.holder_address) = LOWER(lt.developer_address)
       WHERE tt.token_address = ANY($1)
         AND tt.is_dev = true
       GROUP BY tt.token_address, th.balance
     `, [addresses]),
+
   ]);
 
   const statsMap = {};
@@ -73,27 +96,34 @@ async function calcTokenStats(addresses) {
   const holderMap = {};
   for (const h of holderResult.rows) {
     if (!holderMap[h.token_address]) holderMap[h.token_address] = [];
-    holderMap[h.token_address].push(h);
+    if (holderMap[h.token_address].length < 10) {
+      holderMap[h.token_address].push(h);
+    }
   }
 
   const holderCountMap = {};
-  const paperMap = {};
   for (const addr of addresses) {
     holderCountMap[addr] = statsMap[addr]?.holderCount || 0;
+  }
+
+  const paperMap = {};
+  for (const addr of addresses) {
     paperMap[addr] = statsMap[addr]?.paperPct || 0;
   }
 
+  const DEV_DUST_THRESHOLD = 1;
+
   const devMarkMap = {};
   for (const r of devMarkResult.rows) {
-    const buy = Number(r.buy_count || 0);
-    const sell = Number(r.sell_count || 0);
-    const bal = Number(r.dev_balance || 0);
+    const buyCount = Number(r.buy_count || 0);
+    const sellCount = Number(r.sell_count || 0);
+    const devBalance = Number(r.dev_balance || 0);
 
     let mark = "DH";
-    if (sell > 0 && bal < 1) mark = "DS";
-    else if (sell > 0 && buy > sell) mark = "DB";
-    else if (sell > 0) mark = "DP";
-    else if (buy > 1) mark = "DB";
+    if (sellCount > 0 && devBalance < DEV_DUST_THRESHOLD) mark = "DS";
+    else if (sellCount > 0 && buyCount > sellCount) mark = "DB";
+    else if (sellCount > 0) mark = "DP";
+    else if (buyCount > 1) mark = "DB";
 
     devMarkMap[r.token_address] = mark;
   }
@@ -101,130 +131,138 @@ async function calcTokenStats(addresses) {
   return { statsMap, holderMap, holderCountMap, paperMap, devMarkMap };
 }
 
-//
-// ✅ KEEP (tidak dihapus)
-async function get24hChange(tokenAddress) {
-  const { rows } = await db.query(`
-    SELECT close
-    FROM token_candles
-    WHERE LOWER(token_address) = LOWER($1)
-      AND timeframe = '1h'
-    ORDER BY start_time DESC
-    LIMIT 24
-  `, [tokenAddress]);
+// [ADDED] hitung 24h price change
 
-  if (rows.length < 2) return 0;
-
-  const current = Number(rows[0].close || 0);
-  const past = Number(rows[rows.length - 1].close || 0);
-
-  if (!past) return 0;
-
-  return ((current - past) / past) * 100;
-}
-
-//
-// 🔥 [ADDED] batch version (dipakai sekarang)
-async function get24hChangeBatch(addresses) {
-
-  const { rows } = await db.query(`
-    SELECT token_address, close
-    FROM token_candles
-    WHERE token_address = ANY($1)
-      AND timeframe = '1h'
-    ORDER BY token_address, start_time DESC
-  `, [addresses]);
-
-  const map = {};
-
-  for (const r of rows) {
-    if (!map[r.token_address]) map[r.token_address] = [];
-    if (map[r.token_address].length < 24) {
-      map[r.token_address].push(Number(r.close));
-    }
-  }
-
-  const result = {};
-
-  for (const addr of addresses) {
-    const arr = map[addr] || [];
-
-    if (arr.length < 2) {
-      result[addr] = 0;
-      continue;
-    }
-
-    const current = arr[0];
-    const past = arr[arr.length - 1];
-
-    result[addr] = past ? ((current - past) / past) * 100 : 0;
-  }
-
-  return result;
-}
-
-//
-// 🔧 MODIFIED (tidak dihapus)
-async function buildTokenResponse(t, maps, changeMap) {
-
-  const { statsMap, holderMap, holderCountMap, paperMap, devMarkMap } = maps;
+function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, devMarkMap }) {
 
   const liq = getLiquidityStateCache(t.token_address);
   const supply = Number(t.supply || 0);
-  const stats = statsMap[t.token_address] || {};
+  const stats = statsMap[t.token_address] || {
+    priceUsdt: 0, marketCap: 0, volumeUsdt: 0, txCount: 0
+  };
 
-  const change24h = changeMap
-    ? (changeMap[t.token_address] || 0)
-    : await get24hChange(t.token_address); // fallback
+  if (t.migrated && liq && liq.mode !== "dex") liq.mode = "dex";
+
+  const top10 = (holderMap[t.token_address] || []).map((h, i) => {
+    const balance = Number(h.balance || 0);
+    const pct = supply > 0
+      ? parseFloat(((balance / supply) * 100).toFixed(2))
+      : 0;
+    return {
+      rank: i + 1,
+      address: h.holder_address,
+      balance,
+      pct,
+      isDev: h.holder_address.toLowerCase() === (t.developer_address || "").toLowerCase()
+    };
+  });
+
+  const devHolder = top10.find(h => h.isDev);
+  const devHoldPct = devHolder ? devHolder.pct : 0;
+  const mode = t.migrated ? "dex" : (liq?.mode || "bonding");
+
 
   return {
+    launchTime: t.launch_time,
     tokenAddress: t.token_address,
+    developerAddress: t.developer_address || null,
     name: t.name,
     symbol: t.symbol,
 
-    priceUsdt: stats.priceUsdt || 0,
-    marketCap: stats.marketCap || 0,
-    priceChange24h: change24h,
+    basePair: liq?.base_symbol || t.base_pair || null,
+    baseAddress: t.base_address || null,
 
-    volumeUsdt: stats.volumeUsdt || 0,
-    txCount: stats.txCount || 0,
+    description: t.description,
+    imageUrl: t.image_url,
+    sourceFrom: t.source_from,
+
+    website: t.website_url,
+    telegram: t.telegram_url,
+    twitter: t.twitter_url,
+
+    totalSupply: supply,
+    decimals: Number(t.decimals || 18),
+
+    priceUsdt: stats.priceUsdt,
+    marketCap: stats.marketCap,
+    volumeUsdt: stats.volumeUsdt,
+    txCount: stats.txCount,
     holderCount: holderCountMap[t.token_address] || 0,
 
+    tax: {
+      buy: t.tax_buy,
+      sell: t.tax_sell
+    },
+
+    mode,
+    platform: t.migrated
+      ? "dex"
+      : (liq?.platform || t.source_from || null),
+
+    ...(mode !== "dex" && {
+      progress: liq?.progress
+        ? Number((liq.progress * 100).toFixed(2))
+        : 0,
+      targetUSD: liq?.target || 0,
+      bondingLiquidity: {
+        base: liq?.bonding_base || 0,
+        usd: liq?.bonding_usd || 0
+      }
+    }),
+
+    ...(mode === "dex" && {
+      liquidity: {
+        base: liq?.base_liquidity || 0,
+        usd: liq?.liquidity_usd || 0
+      }
+    }),
+
+    migrated: t.migrated,
+    migratedTime: t.migrated_time,
+
     devMark: devMarkMap[t.token_address] || "DH",
+
+    holderStats: {
+      devHoldPct,
+      paperHandPct: paperMap[t.token_address] || 0,
+      top10
+    }
   };
 }
 
-//
-// 🚀 endpoint (pakai batch, tapi function lama tetap ada)
-//
 export async function getNewTokens(req, reply) {
+
   try {
+
+    const limit = Math.min(Math.max(parseInt(req.query?.limit) || 50, 1), 500);
+    const cacheKey = `new_tokens_${limit}`;
+
+    const cached = cacheGet(cacheKey);
+    if (cached) return cached;
 
     const { rows } = await db.query(`
       SELECT *
       FROM launch_tokens
       WHERE migrated = false
       ORDER BY launch_time DESC
-      LIMIT 50
-    `);
+      LIMIT $1
+    `, [limit]);
+
+    if (!rows.length) return [];
 
     const addresses = rows.map(r => r.token_address);
+    const maps = await calcTokenStats(addresses);
+    const tokens = rows.map(t => buildTokenResponse(t, maps));
 
-    const [maps, changeMap] = await Promise.all([
-      calcTokenStats(addresses),
-      get24hChangeBatch(addresses)
-    ]);
-
-    const tokens = await Promise.all(
-      rows.map(t => buildTokenResponse(t, maps, changeMap))
-    );
+    cacheSet(cacheKey, tokens, 10_000);
 
     return tokens;
 
   } catch (err) {
     console.error("[NEW TOKENS ERROR]", err);
-    return reply.code(500).send({ error: "failed" });
+    return reply.code(500).send({ error: "failed_to_fetch_new_tokens" });
   }
+
 }
 
 export async function getTokenInfo(req, reply) {
@@ -248,7 +286,6 @@ export async function getTokenInfo(req, reply) {
     const stats = maps.statsMap[addr] || { priceUsdt: 0, marketCap: 0, volumeUsdt: 0, txCount: 0 };
     const supply = Number(token.supply || 0);
     const liq = getLiquidityStateCache(addr);
-    const change24h = await get24hChange(addr);
     const topHolders = (maps.holderMap[addr] || []).map((h, i) => {
       const balance = Number(h.balance || 0);
       const pct = supply > 0
@@ -364,9 +401,7 @@ export async function getTokensMigrating(req, reply) {
 
     const addresses = rows.map(r => r.token_address);
     const maps = await calcTokenStats(addresses);
-    const tokens = await Promise.all(
-  rows.map(t => buildTokenResponse(t, maps))
-);
+    const tokens = rows.map(t => buildTokenResponse(t, maps));
 
     cacheSet(cacheKey, tokens, 10_000);
 
@@ -401,9 +436,7 @@ export async function getTokensMigrated(req, reply) {
 
     const addresses = rows.map(r => r.token_address);
     const maps = await calcTokenStats(addresses);
-    const tokens = await Promise.all(
-  rows.map(t => buildTokenResponse(t, maps))
-);
+    const tokens = rows.map(t => buildTokenResponse(t, maps));
 
     cacheSet(cacheKey, tokens, 10_000);
 
