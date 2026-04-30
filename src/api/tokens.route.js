@@ -181,7 +181,7 @@ async function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, pape
   const devHoldPct = devHolder ? devHolder.pct : 0;
   const mode = t.migrated ? "dex" : (liq?.mode || "bonding");
 
-  const change24h = await get24hChange(addr);
+  const change24h = await get24hChange(t.token_address);
 
   return {
     launchTime: t.launch_time,
