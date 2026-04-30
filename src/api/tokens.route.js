@@ -181,6 +181,8 @@ function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, 
   const devHoldPct = devHolder ? devHolder.pct : 0;
   const mode = t.migrated ? "dex" : (liq?.mode || "bonding");
 
+  const change24h = await get24hChange(addr);
+
   return {
     launchTime: t.launch_time,
     tokenAddress: t.token_address,
@@ -204,6 +206,7 @@ function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, 
 
     priceUsdt: stats.priceUsdt,
     marketCap: stats.marketCap,
+    priceChange24h: change24h, 
     volumeUsdt: stats.volumeUsdt,
     txCount: stats.txCount,
     holderCount: holderCountMap[t.token_address] || 0,
