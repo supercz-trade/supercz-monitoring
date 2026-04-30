@@ -153,7 +153,7 @@ async function get24hChange(tokenAddress) {
   return ((current - past) / past) * 100;
 }
 
-function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, devMarkMap }) {
+async function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, devMarkMap }) {
 
   const liq = getLiquidityStateCache(t.token_address);
   const supply = Number(t.supply || 0);
@@ -274,7 +274,9 @@ export async function getNewTokens(req, reply) {
 
     const addresses = rows.map(r => r.token_address);
     const maps = await calcTokenStats(addresses);
-    const tokens = rows.map(t => buildTokenResponse(t, maps));
+    const tokens = await Promise.all(
+  rows.map(t => buildTokenResponse(t, maps))
+);
 
     cacheSet(cacheKey, tokens, 10_000);
 
@@ -424,7 +426,9 @@ export async function getTokensMigrating(req, reply) {
 
     const addresses = rows.map(r => r.token_address);
     const maps = await calcTokenStats(addresses);
-    const tokens = rows.map(t => buildTokenResponse(t, maps));
+    const tokens = await Promise.all(
+  rows.map(t => buildTokenResponse(t, maps))
+);
 
     cacheSet(cacheKey, tokens, 10_000);
 
@@ -459,7 +463,9 @@ export async function getTokensMigrated(req, reply) {
 
     const addresses = rows.map(r => r.token_address);
     const maps = await calcTokenStats(addresses);
-    const tokens = rows.map(t => buildTokenResponse(t, maps));
+    const tokens = await Promise.all(
+  rows.map(t => buildTokenResponse(t, maps))
+);
 
     cacheSet(cacheKey, tokens, 10_000);
 
