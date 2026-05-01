@@ -131,7 +131,6 @@ async function calcTokenStats(addresses) {
   return { statsMap, holderMap, holderCountMap, paperMap, devMarkMap };
 }
 
-// [ADDED] hitung 24h price change
 
 function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, devMarkMap }) {
 
@@ -188,6 +187,7 @@ function buildTokenResponse(t, { statsMap, holderMap, holderCountMap, paperMap, 
     volumeUsdt: stats.volumeUsdt,
     txCount: stats.txCount,
     holderCount: holderCountMap[t.token_address] || 0,
+    change24h: null,
 
     tax: {
       buy: t.tax_buy,
@@ -304,6 +304,24 @@ export async function getTokenInfo(req, reply) {
     const devHoldPct = devHolder ? devHolder.pct : 0;
     const mode = liq?.mode || (token.migrated ? "dex" : "bonding");
 
+    // Calculate 24h price change from candles
+    let change24h = null;
+    try {
+      const { rows: candleRows } = await db.query(`
+        SELECT open, close FROM token_candles
+        WHERE LOWER(token_address) = LOWER($1)
+          AND timeframe = '1h'
+          AND start_time >= NOW() - INTERVAL '25 hours'
+        ORDER BY start_time ASC
+        LIMIT 1
+      `, [addr]);
+      if (candleRows.length > 0 && Number(candleRows[0].open) > 0) {
+        const open24h = Number(candleRows[0].open);
+        const current = stats.priceUsdt;
+        change24h = Number((((current - open24h) / open24h) * 100).toFixed(2));
+      }
+    } catch {}
+
     return {
       launchTime: token.launch_time,
       tokenAddress: token.token_address,
@@ -327,8 +345,7 @@ export async function getTokenInfo(req, reply) {
 
       priceUsdt: stats.priceUsdt,
       marketCap: stats.marketCap,
-      priceChange24h: change24h, // [ADDED] 
-      volumeUsdt: stats.volumeUsdt,
+      priceChange24h: change24h,       volumeUsdt: stats.volumeUsdt,
       txCount: stats.txCount,
       holderCount: maps.holderCountMap[addr] || 0,
 
